@@ -36,7 +36,7 @@
 bl_info = {
     "name": "fcecodec_blender",
     "author": "bfut",
-    "version": (0, 4),
+    "version": (0, 5),
     "blender": (4, 0, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files",
@@ -126,6 +126,13 @@ def ExportObj(mesh, objpath, mtlpath, texname, print_damage, print_dummies,
 
 def GetMeshPartnames(mesh):
     return [mesh.PGetName(pid) for pid in range(mesh.MNumParts)]
+
+def GetMeshPartnameIdx(mesh, partname):
+    for pid in range(mesh.MNumParts):
+        if mesh.PGetName(pid) == partname:
+            return pid
+    print(f"GetMeshPartnameIdx: Warning: cannot find '{partname}'")
+    return -1
 
 def GetPartGlobalOrderVidxs(mesh, pid):
     map_verts = mesh.MVertsGetMap_idx2order
@@ -324,9 +331,15 @@ def ShapeToPart(reader,
         texps = mesh.PGetTriagsTexpages(mesh.MNumParts - 1)
         for i in range(texps.shape[0]):
             if materials[s_matls[i]].name[:2] == "0x":
-                texps[i] = int(materials[s_matls[i]].name[2:], base=16)
+                # Blender may change the name of the material to "0x003.001" from "0x003"
+                mat_ = materials[s_matls[i]].name[2:]
+                mat_ = re.sub(r'\.(.*)', '', mat_)
+                texps[i] = int(mat_, base=16)
             else:
-                tags = materials[s_matls[i]].name.split("_")
+                # Blender may change the name of the material to "<name>.001" from "<name>"
+                mat_ = materials[s_matls[i]].name
+                mat_ = re.sub(r'\.(.*)', '', mat_)
+                tags = mat_.split("_")
                 texps[i] = GetTexPageFromTags(tags)
             if texps[i] > 0:
                 num_arts_warning = True
@@ -508,19 +521,6 @@ def CenterParts(mesh):
 
 #
 def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
-    # if CONFIG["fce_version"] not in ["3", "4", "4m", "4M"]:
-    #     print(f"requires fce_version = '3'|'4'|'4M' (received {CONFIG['fce_version']})")
-    #     sys.exit()
-    # if CONFIG["center_parts"] not in [0, 1]:
-    #     print(f"requires center_parts = 0|1 (received {CONFIG['center_parts']})")
-    #     sys.exit()
-    # if CONFIG["material2texpage"] not in [0, 1]:
-    #     print(f"requires material2texpage = 0|1 (received {CONFIG['material2texpage']})")
-    #     sys.exit()
-    # if CONFIG["material2triagflag"] not in [0, 1]:
-    #     print(f"requires material2triagflag = 0|1 (received {CONFIG['material2triagflag']})")
-    #     sys.exit()
-
     # Import OBJ
     reader = LoadObj(filepath_obj_input)
     attrib = reader.GetAttrib()
@@ -579,6 +579,84 @@ def workload_RescaleModel(filepath_fce_input, rescale_factor, fce_outversion, CO
     WriteFce(fce_outversion, mesh, filepath_fce_output, CONFIG["center_parts"])
     # PrintFceInfo(filepath_fce_output)
     # print("OUTPUT =", filepath_fce_output, flush=True)
+
+
+#########################################################
+# -------------------------------------- bfut_SortPartsToFce3Order
+
+# -------------------------------------- script functions
+def PrintMeshParts_order(mesh, part_names_sorted):
+    print("pid  IS                          SHOULD")
+    for pid in range(mesh.MNumParts):
+        print(f"{pid:<2} {mesh.PGetName(pid):<12} {part_names_sorted[pid]:<12}")
+
+def AssertPartsOrder(mesh, part_names_sorted):
+    for pid in range(mesh.MNumParts):
+        if mesh.PGetName(pid) != part_names_sorted[pid]:
+            PrintMeshParts_order(mesh, part_names_sorted)
+            raise AssertionError (f"pid={pid} {mesh.PGetName(pid)} != {part_names_sorted[pid]}")
+
+def workload_SortPartsToFce3Order(filepath_fce_input, fce_outversion):
+    filepath_fce_output = filepath_fce_input
+
+    mesh = fc.Mesh()
+    mesh = LoadFce(mesh, filepath_fce_input)
+
+    # sort
+    if mesh.MNumParts > 1:
+        priority_dic = {  # NB1: front wheel order differs for high body/medium body
+            "high body": 0,
+            "left front wheel": 1,
+            "right front wheel": 2,
+            "left rear wheel": 3,
+            "right rear wheel": 4,
+            "medium body": 5,
+            "medium r front wheel": 6,
+            "medium l front wheel": 7,
+            "medium r rear wheel": 8,
+            "medium l rear wheel": 9,
+            "small body": 10,
+            "tiny body": 11,
+            "high headlights": 12,
+
+            ":HB": 0,
+            ":HLFW": 1,
+            ":HRFW": 2,
+            ":HLRW": 3,
+            ":HRRW": 4,
+            ":MB": 5,
+            ":MRFW": 6,
+            ":MLFW": 7,
+            ":MRRW": 8,
+            ":MLRW": 9,
+            ":LB": 10,
+            ":TB": 11,
+            ":OL": 12,
+
+            ":Hbody": 0,
+        }
+
+        part_names = []
+        for pid in reversed(range(mesh.MNumParts)):
+            part_names += [mesh.PGetName(pid)]
+        part_names_sorted = sorted(part_names, key=lambda x: priority_dic.get(x, 64))
+
+        for target_idx in range(0, len(part_names_sorted)):
+            pname = part_names_sorted[target_idx]
+            current_idx = GetMeshPartnameIdx(mesh, pname)
+            # print(f" {pname} {current_idx} -> {target_idx}")
+            while current_idx > target_idx:
+                current_idx = mesh.OpMovePart(current_idx)
+        AssertPartsOrder(mesh, part_names_sorted)
+        # PrintMeshParts(mesh, part_names_sorted)
+
+
+    WriteFce(fce_outversion, mesh, filepath_fce_output)
+    PrintFceInfo(filepath_fce_output)
+    # print(f"OUTPUT = {filepath_fce_output}", flush=True)
+
+# -------------------------------------- bfut_SortPartsToFce3Order
+#########################################################
 
 
 # workload
@@ -667,6 +745,8 @@ class FcecodecImport(Operator, ImportHelper):
         ExportObj(mesh, path_obj, path_mtl, texname, self.print_damage, self.print_dummies, self.use_part_positions, self.print_part_positions)
         bpy.ops.wm.obj_import(filepath=str(path_obj))
 
+        clrs = mesh.MGetColors()
+
         # cleanup
         path_obj.unlink()
         path_mtl.unlink()
@@ -688,7 +768,7 @@ class FcecodecExport(Operator, ExportHelper):
     export_selected_objects: BoolProperty(
         name='Limit export to selected objects',
         description='Ignore parts that are not selected. ',
-        default=True
+        default=False
     )
 
     fce_version: EnumProperty(
@@ -707,7 +787,6 @@ class FcecodecExport(Operator, ExportHelper):
             'are the the most common formats.'
         ),
         default=0,  # Warning => If you change the default, need to change the default filter too
-        # update=on_export_format_changed,
     )
 
     fce_num_arts: IntProperty(
@@ -718,7 +797,10 @@ class FcecodecExport(Operator, ExportHelper):
         max=30
     )
 
-    fce_rescale_factor: FloatProperty(name='Scale', default=1.0, min=0.1, max=10.0)
+    fce_rescale_factor: FloatProperty(
+        name='Scale',
+        description='Warning: Values other than 1.0 will reset custom part positions.',
+        default=1.0, min=0.1, max=10.0)
 
     # draws checkboxes in the import dialog
     def draw(self, context):
@@ -752,7 +834,7 @@ class FcecodecExport(Operator, ExportHelper):
         ptn = time.process_time_ns()
         CONFIG = {
             "fce_version"        : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
-            "center_parts"       : False,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
+            "center_parts"       : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
             "material2texpage"   : 1,  # maps OBJ face materials to FCE texpages (expects 0|1)
             "material2triagflag" : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
         }
@@ -763,6 +845,8 @@ class FcecodecExport(Operator, ExportHelper):
         print(f"FCE export of '{path.name}' took {ptn:.2f} ms")
 
 
+        print(f"Apply options to {path}")
+        ptn = time.process_time_ns()
         if self.fce_rescale_factor < 0.1:
             self.fce_rescale_factor = 1.0
         if abs(1.0 - self.fce_rescale_factor) > 1e-3:
@@ -773,6 +857,10 @@ class FcecodecExport(Operator, ExportHelper):
             }
             workload_RescaleModel(path, self.fce_rescale_factor, self.fce_version, CONFIG)
 
+        if self.fce_version == "3":
+            workload_SortPartsToFce3Order(path, self.fce_version)
+        ptn = float(time.process_time_ns() - ptn) / 1e6
+        print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
 
         # cleanup
         path_obj.unlink()
