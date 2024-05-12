@@ -36,7 +36,7 @@
 bl_info = {
     "name": "fcecodec_blender",
     "author": "bfut",
-    "version": (0, 5),
+    "version": (0, 6),
     "blender": (4, 0, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files",
@@ -44,8 +44,8 @@ bl_info = {
     "url": "https://github.com/bfut/fcecodec",
 }
 
-import contextlib
-import os
+# import contextlib
+# import os
 import pathlib
 import re
 import subprocess
@@ -789,6 +789,13 @@ class FcecodecExport(Operator, ExportHelper):
         default=0,  # Warning => If you change the default, need to change the default filter too
     )
 
+    fce_material2texpage: BoolProperty(
+        name='Map materials to FCE texture pages',
+        description='Maps face materials to FCE texpages. '
+                     'Only relevant for NFS3 & HS officer models, NFS:HS road objects, and MCO',
+        default=False
+    )
+
     fce_num_arts: IntProperty(
         name='Number of arts',
         description='Must be set to 1 for NFS3 and NFS:HS unless you know what you are doing. ',
@@ -809,6 +816,7 @@ class FcecodecExport(Operator, ExportHelper):
         # layout.use_property_decorate = False  # No animation.
         layout.prop(self, 'export_selected_objects')
         layout.prop(self, 'fce_version')
+        layout.prop(self, 'fce_material2texpage')
         layout.prop(self, 'fce_num_arts')
         layout.prop(self, 'fce_rescale_factor')
 
@@ -823,6 +831,7 @@ class FcecodecExport(Operator, ExportHelper):
         path_mtl = path.with_name(path.stem + "_" + time_suffix).with_suffix(".mtl")
 
         bpy.ops.wm.obj_export(filepath=str(path_obj),
+                              export_selected_objects=self.export_selected_objects,
                               export_materials=True,
                               export_triangulated_mesh=True)
 
@@ -835,7 +844,7 @@ class FcecodecExport(Operator, ExportHelper):
         CONFIG = {
             "fce_version"        : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
             "center_parts"       : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
-            "material2texpage"   : 1,  # maps OBJ face materials to FCE texpages (expects 0|1)
+            "material2texpage"   : self.fce_material2texpage,  # maps OBJ face materials to FCE texpages (expects 0|1)
             "material2triagflag" : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
         }
         # with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
@@ -847,6 +856,7 @@ class FcecodecExport(Operator, ExportHelper):
 
         print(f"Apply options to {path}")
         ptn = time.process_time_ns()
+
         if self.fce_rescale_factor < 0.1:
             self.fce_rescale_factor = 1.0
         if abs(1.0 - self.fce_rescale_factor) > 1e-3:
@@ -859,6 +869,17 @@ class FcecodecExport(Operator, ExportHelper):
 
         if self.fce_version == "3":
             workload_SortPartsToFce3Order(path, self.fce_version)
+
+        # TODO: For officer models and pursuit road objects,
+        # the NumArts value must equal the greatest used texture page minus 1. In all other cases, NumArts = 1.
+        if self.fce_num_arts != 1:
+            print(f"Setting NumArts to {self.fce_num_arts}")
+            mesh = fc.Mesh()
+            mesh = LoadFce(mesh, path)
+            mesh.MNumArts = self.fce_num_arts
+            WriteFce(self.fce_version, mesh, path)
+            PrintFceInfo(path)
+
         ptn = float(time.process_time_ns() - ptn) / 1e6
         print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
 
@@ -867,7 +888,6 @@ class FcecodecExport(Operator, ExportHelper):
         path_mtl.unlink()
 
         return {'FINISHED'}
-
 
 
 def menu_func_import(self, context):
