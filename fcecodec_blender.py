@@ -16,56 +16,59 @@
 #    misrepresented as being the original software.
 # 3. This notice may not be removed or altered from any source distribution.
 """
-    fcecodec_blender.py
+    fcecodec_blender.py - Blender Add-on (for versions 4.x and 3.6 LTS)
 
-    Features:
-        import/export FCE to Blender 4.x
+    INSTALLATION:
+        * Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
+            - requires an active internet connection while Blender installs Python modules "fcecodec" and "tinyobjloader"
 
-    Installation:
-        Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
+    USAGE:
+        * File > Import > Need For Speed (.fce)
+            - select FCE file and optional TGA texture file in the import dialog
+            - otherwise self-explaining Blender import dialog
 
-    * File > Import > Need For Speed (.fce)
-        - select FCE file and optional TGA texture file in the import dialog
-        - check the checkboxes for additional import options
-
-    * File > Export > Need For Speed (.fce)
-        - self-explaning Blender export dialog
-
+        * File > Export > Need For Speed (.fce)
+            - self-explaining Blender export dialog
 """
 
 bl_info = {
     "name": "fcecodec_blender",
-    "author": "bfut",
-    "version": (0, 6),
-    "blender": (4, 0, 0),
+    "author": "Benjamin Futasz",
+    "version": (1, 0),
+    "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
-    "description": "Imports & Exports Need For Speed (.fce) files",
+    "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
     "category": "Import-Export",
-    "url": "https://github.com/bfut/fcecodec",
+    "url": "https://github.com/bfut/fcecodec_blender",
 }
 
-# import contextlib
-# import os
+import colorsys
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
-
-def pip_install(package, upgrade=False, pre=False):
-    if upgrade and not pre:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", package])
-    elif upgrade and pre:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", package, "--pre"])
+def pip_install(package, upgrade=False, pre=False, version: str | None = None):
+    _call = [sys.executable, "-m", "pip", "install"]
+    if upgrade:
+        _call.append("-U")
+    if pre:
+        _call.append("--pre")
+    if version:
+        _call.append(f"{package}>={version}")
     else:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        _call.append(package)
+    subprocess.check_call(_call)
 
+min_fcecodec_version = "1.6"
 try:
     import fcecodec as fc
+    if fc.__version__ < min_fcecodec_version:
+        raise ImportError
 except ImportError:
-    pip_install("pip", upgrade=True)
-    pip_install("fcecodec", upgrade=True)
+    pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
     import fcecodec as fc
 
 try:
@@ -77,23 +80,59 @@ except ImportError:
 try:
     import tinyobjloader
 except ImportError:
-    pip_install("pip", upgrade=True)
     pip_install("tinyobjloader", upgrade=True, pre=True)
     import tinyobjloader
-
 
 import bpy
 from bpy.props import (StringProperty,
                        BoolProperty,
                        EnumProperty,
                        IntProperty,
+                       IntVectorProperty,
                        FloatProperty,
+                       FloatVectorProperty,
                        CollectionProperty)
 from bpy.types import Operator
-from bpy_extras.io_utils import ImportHelper, ExportHelper #, poll_file_object_drop
+from bpy_extras.io_utils import ImportHelper, ExportHelper
 
 
 # wrappers
+def ReorderTriagsTransparentDetachedAndToLast(mesh, pid_opaq):
+    """ Copy original part, delete semi-transparent triags in original,
+        delete opaque triags in copy, clean-up unreferenced verts, merge parts,
+        delete temporary & original, move merged part to original index """
+    pid_transp = mesh.OpCopyPart(pid_opaq)
+    mesh.OpDeletePartTriags(pid_opaq, np.where(mesh.PGetTriagsFlags(pid_opaq) & 0x8 == 0x8)[0])
+    mesh.OpDeletePartTriags(pid_transp, np.where(mesh.PGetTriagsFlags(pid_transp) & 0x8 < 0x8)[0])
+    mesh.OpDelUnrefdVerts()
+    new_pid = mesh.OpMergeParts(pid_opaq, pid_transp)  # last part idx
+    mesh.PSetName(new_pid, mesh.PGetName(pid_opaq))
+    mesh.OpDeletePart(pid_transp)
+    mesh.OpDeletePart(pid_opaq)
+    new_pid -= 2  # last part idx is now smaller
+    while new_pid > pid_opaq:
+        new_pid = mesh.OpMovePart(new_pid)  # move merged part to original index
+    return mesh
+
+def HiBody_ReorderTriagsTransparentToLast(mesh, version):
+    """ Not implemented for FCE4M because windows are separate parts """
+    if version in ("3", 3):
+        mesh = ReorderTriagsTransparentDetachedAndToLast(mesh, 0)  # high body
+        if mesh.MNumParts >= 12:
+            mesh = ReorderTriagsTransparentDetachedAndToLast(mesh, 12)  # high headlights
+    elif version in ("4", 4):
+        for partname in (":HB", ":OT", ":OL"):
+            pid = GetMeshPartnameIdx(mesh, partname)
+            if pid >= 0:
+                mesh = ReorderTriagsTransparentDetachedAndToLast(mesh, pid)
+    return mesh
+
+def GetFceVersion(path):
+    with open(path, "rb") as f:
+        version = fc.GetFceVersion(f.read(0x2038))
+        assert version > 0
+        return version
+
 def PrintFceInfo(path):
     with open(path, "rb") as f:
         buf = f.read()
@@ -119,10 +158,12 @@ def WriteFce(version, mesh, path, center_parts=False, mesh_function=None):
         assert fc.ValidateFce(buf) == 1
         f.write(buf)
 
-def ExportObj(mesh, objpath, mtlpath, texname, print_damage, print_dummies,
-              use_part_positions, print_part_positions):
-    mesh.IoExportObj(str(objpath), str(mtlpath), str(texname), print_damage,
-                     print_dummies, use_part_positions, print_part_positions)
+def ExportObj(mesh, objpath, mtlpath, texname,
+              print_damage, print_dummies, use_part_positions, print_part_positions,
+              filter_triagflags_0xfff=True):
+    mesh.IoExportObj(str(objpath), str(mtlpath), str(texname),
+                     print_damage, print_dummies, use_part_positions, print_part_positions,
+                     filter_triagflags_0xfff)
 
 def GetMeshPartnames(mesh):
     return [mesh.PGetName(pid) for pid in range(mesh.MNumParts)]
@@ -141,6 +182,44 @@ def GetPartGlobalOrderVidxs(mesh, pid):
         # print(part_vidxs[i], map_verts[part_vidxs[i]])
         part_vidxs[i] = map_verts[part_vidxs[i]]
     return part_vidxs
+
+def FilterTexpageTriags(mesh, drop_texpages: int | list | None = None, select_texpages: int | list | None = None):
+    # Delete triangles with texpage in drop_texpages
+    if drop_texpages is not None and select_texpages is None:
+        if not isinstance(drop_texpages, list):
+            drop_texpages = [drop_texpages]
+        for pid in reversed(range(mesh.MNumParts)):
+            texp = mesh.PGetTriagsTexpages(pid)
+            mask = np.isin(texp, drop_texpages)
+            x = mask.nonzero()[0]
+            assert mesh.OpDeletePartTriags(pid, x)
+
+    # Delete triangles with texpage not in select_texpages
+    elif drop_texpages is None and select_texpages is not None:
+        print(f"FilterTexpageTriags: select_texpages={select_texpages}")
+        if not isinstance(select_texpages, list):
+            select_texpages = [select_texpages]
+        for pid in reversed(range(mesh.MNumParts)):
+            print(f"before mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
+            texp = mesh.PGetTriagsTexpages(pid)
+            mask = np.isin(texp, select_texpages)
+            mask = np.invert(mask)
+            x = mask.nonzero()[0]
+            print(mesh.PGetName(pid), texp.shape, x.shape, np.unique(texp))
+            assert mesh.OpDeletePartTriags(pid, x)
+            print(f"after: mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
+
+    else:
+        ValueError("FilterTexpageTriags: call with either drop_texpages or select_texpages, not both")
+
+    # assert mesh.OpDelUnrefdVerts()
+    return mesh
+
+def DeleteEmptyParts(mesh):
+    for pid in reversed(range(mesh.MNumParts)):
+        if mesh.PNumTriags(pid) == 0:
+            mesh.OpDeletePart(pid)
+    return mesh
 
 
 #########################################################
@@ -330,15 +409,12 @@ def ShapeToPart(reader,
         materials = reader.GetMaterials()
         texps = mesh.PGetTriagsTexpages(mesh.MNumParts - 1)
         for i in range(texps.shape[0]):
-            if materials[s_matls[i]].name[:2] == "0x":
-                # Blender may change the name of the material to "0x003.001" from "0x003"
-                mat_ = materials[s_matls[i]].name[2:]
-                mat_ = re.sub(r'\.(.*)', '', mat_)
+            # Blender may change the name of the material to "<name>.001" from "<name>"
+            mat_ = materials[s_matls[i]].name
+            mat_ = re.sub(r"\.(.*)", "", mat_)
+            if mat_[:2] == "0x":
                 texps[i] = int(mat_, base=16)
             else:
-                # Blender may change the name of the material to "<name>.001" from "<name>"
-                mat_ = materials[s_matls[i]].name
-                mat_ = re.sub(r'\.(.*)', '', mat_)
                 tags = mat_.split("_")
                 texps[i] = GetTexPageFromTags(tags)
             if texps[i] > 0:
@@ -358,25 +434,15 @@ def ShapeToPart(reader,
         # if material name is hex value, map straight to triag flag
         # if it isn't, treat as string of tags
         for i in range(tflags.shape[0]):
-            try:
-                # print(materials[s_matls[i]].name, int(materials[s_matls[i]].name[2:], base=16))
-                tflags[i] = int(materials[s_matls[i]].name[2:], base=16)
-            except ValueError:
-                tags = materials[s_matls[i]].name.split("_")
+            # Blender may change the name of the material to "<name>.001" from "<name>"
+            mat_ = materials[s_matls[i]].name
+            mat_ = re.sub(r"\.(.*)", "", mat_)
+            if mat_[:2] == "0x":
+                tflags[i] = int(mat_, base=16)
+            else:
+                tags = mat_.split("_")
                 tflags[i] = GetFlagFromTags(tags)
         mesh.PSetTriagsFlags(mesh.MNumParts - 1, tflags)
-
-        for i in range(len(materials)):
-            tmp = materials[i].name
-            # print(tmp)
-            if tmp[:2] == "0x":
-                try:
-                    # print(tmp, "->", int(tmp[2:], base=16), f"0x{hex(int(tmp[2:], base=16))}")
-                    val = int(tmp[2:], base=16)
-                    del val
-                except ValueError:
-                    print(f"Cannot map faces material name to triangles flags ('{materials[i].name}' is not hex value) 1")
-                    break
 
     return mesh
 
@@ -389,11 +455,21 @@ def CopyDamagePartsVertsToPartsVerts(mesh):
     mesh.PrintInfo()
     for damgd_pid in range(mesh.MNumParts):
         if part_names[damgd_pid][:7] == "DAMAGE_":
+            damgd_pids += [damgd_pid]
+
             pid = np.argwhere(part_names == part_names[damgd_pid][7:])
             # print(damgd_pid, part_names[damgd_pid], pid, len(pid))
             if len(pid) < 1:
                 continue
             pid = pid[0][0]
+
+            if mesh.PNumTriags(damgd_pid) != mesh.PNumTriags(pid):
+                print(f"discarding '{part_names[damgd_pid]}', because number of triags differ to {part_names[pid]}")
+                continue
+            if mesh.PNumVerts(damgd_pid) != mesh.PNumVerts(pid):
+                print(f"discarding '{part_names[damgd_pid]}', because number of verts differ to {part_names[pid]}")
+                continue
+
             print(f"copy verts/norms of {part_names[damgd_pid]} to damaged verts/norms of {part_names[pid]}")
             damgd_part_vidxs = GetPartGlobalOrderVidxs(mesh, damgd_pid)
             part_vidxs = GetPartGlobalOrderVidxs(mesh, pid)
@@ -411,7 +487,6 @@ def CopyDamagePartsVertsToPartsVerts(mesh):
             dv[part_vidxs] = mesh.MVertsPos.reshape((-1, 3))[damgd_part_vidxs]
             mesh.MVertsDamgdNorms = dn.flatten()
             mesh.MVertsDamgdPos = dv.flatten()
-            damgd_pids += [damgd_pid]
     for i in sorted(damgd_pids, reverse=True):
         mesh.OpDeletePart(i)
     print(damgd_pids)
@@ -502,6 +577,7 @@ def CenterParts(mesh):
     for name, i in zip(part_names, range(mesh.MNumParts)):
         if name[:9] == "POSITION_":
             pos_parts[name[9:]] = i
+            pos_pids += [i]
     print(pos_parts)
     for pid in range(mesh.MNumParts):
         if part_names[pid][:9] != "POSITION_":
@@ -511,7 +587,6 @@ def CenterParts(mesh):
             else:                                 # POSITION_<partname> is available
                 pos_pid = pos_parts[part_names[pid]]
                 print(f"center {part_names[pid]} to centroid of {part_names[pos_pid]}")
-                pos_pids += [pos_pid]
                 mesh.OpCenterPart(pos_pid)
                 mesh.OpSetPartCenter(pid, mesh.PGetPos(pos_pid))
     for i in sorted(pos_pids, reverse=True):
@@ -554,31 +629,6 @@ def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
 
 # -------------------------------------- bfut_Obj2Fce3
 #########################################################
-
-#
-def workload_RescaleModel(filepath_fce_input, rescale_factor, fce_outversion, CONFIG):
-    filepath_fce_output = filepath_fce_input
-
-    # Load FCE
-    mesh = fc.Mesh()
-    mesh = LoadFce(mesh, filepath_fce_input)
-
-    # Rescale
-    print(f"rescale_factor={rescale_factor}")
-    if rescale_factor > 0.0 and abs(rescale_factor) > 0.1:
-        for pid in reversed(range(mesh.MNumParts)):
-            mesh.OpCenterPart(pid)
-            ppos = mesh.PGetPos(pid)  # xyz
-            mesh.PSetPos(pid, ppos * rescale_factor)
-        v = mesh.MVertsPos  # xyzxyzxyz...
-        mesh.MVertsPos = v * rescale_factor
-        dv = mesh.MGetDummyPos()  # xyzxyzxyz...
-        mesh.MSetDummyPos(dv * rescale_factor)
-
-    # Write FCE
-    WriteFce(fce_outversion, mesh, filepath_fce_output, CONFIG["center_parts"])
-    # PrintFceInfo(filepath_fce_output)
-    # print("OUTPUT =", filepath_fce_output, flush=True)
 
 
 #########################################################
@@ -659,14 +709,134 @@ def workload_SortPartsToFce3Order(filepath_fce_input, fce_outversion):
 #########################################################
 
 
-# workload
-class FcecodecImport(Operator, ImportHelper):
-    """Using fcecodec, import an FCE file"""      # Use this as a tooltip for menu items and buttons.
-    bl_idname = "import_scene.fce"        # Unique identifier for buttons and menu items to reference.
-    bl_label = "Need For Speed (.fce)"         # Display name in the interface.
-    bl_options = {'REGISTER', 'UNDO'}  # Enable undo for the operator.
+#########################################################
+# -------------------------------------- bfut_ConvertDummies (to Fce3) (Fce3 to Fce4)
 
-    filter_glob: StringProperty(default="*.fce;*.tga", options={'HIDDEN'})
+def GetDummies(mesh):
+    dms_pos = mesh.MGetDummyPos()
+    dms_pos = np.reshape(dms_pos, (int(dms_pos.shape[0] / 3), 3))
+    dms_names = mesh.MGetDummyNames()
+    return dms_pos, dms_names
+
+def SetDummies(mesh, dms_pos, dms_names):
+    dms_pos = np.reshape(dms_pos, (int(dms_pos.shape[0] * 3)))
+    dms_pos = dms_pos.astype("float32")
+    mesh.MSetDummyPos(dms_pos)
+    mesh.MSetDummyNames(dms_names)
+    return mesh
+
+def DummiesToFce3(dms_pos, dms_names):
+    for i in range(len(dms_names)):
+        x = dms_names[i]
+        """
+        if x[0] in [":", "B", "I", "M", "P", "R"]:
+            print(x, "->", dms_names[i])
+            continue
+        # """
+        if x[:4] in ["HFLO", "HFRE", "HFLN", "HFRN", "TRLO", "TRRE", "TRLN",
+                     "TRRN", "SMLN", "SMRN"]:
+            pass  # keep canonical FCE3 names
+        elif x[0] == "B":
+            # dms_names[i] = "TRLO"  # convert brake lights to taillights?
+            pass
+        elif x[0] in ["H", "I"]:
+            if x[3] == "O":
+                dms_names[i] = "HFLO"
+            elif x[3] == "E":
+                dms_names[i] = "HFRE"
+            elif dms_pos[i, 0] < 0:  # left-hand
+                dms_names[i] = "HFLN"
+            else:
+                dms_names[i] = "HFRN"
+            """
+            # T - fce4 taillights seemingly work for fce3
+            elif x[0] == "T":
+                if x[3] == "O":
+                    dms_names[i] = "TRLO"
+                elif x[3] == "E":
+                    dms_names[i] = "TRRE"
+                elif dms_pos[i, 0] < 0:  # left-hand
+                    dms_names[i] = "TRLN"
+                else:
+                    dms_names[i] = "TRRN"
+            # """
+        elif x[0] == "S":
+            if x[1] == "B":
+                dms_names[i] = "SMLN"  # blue
+            else:
+                dms_names[i] = "SMRN"  # red
+        print(x, "->", dms_names[i])
+    return dms_pos, dms_names
+
+def workload_ConvertDummies_to_Fce3_(filepath_fce_input, fce_outversion):
+    filepath_fce_output = filepath_fce_input
+
+    mesh = fc.Mesh()
+    mesh = LoadFce(mesh, filepath_fce_input)
+
+    dms_pos, dms_names = GetDummies(mesh)
+    dms_pos, dms_names = DummiesToFce3(dms_pos, dms_names)
+    mesh = SetDummies(mesh, dms_pos, dms_names)
+
+    WriteFce(fce_outversion, mesh, filepath_fce_output)
+
+def DummiesFce3ToFce4(dms_pos, dms_names):
+    for i in range(len(dms_names)):
+        x = dms_names[i]
+        tmp = []
+        if bool(re.search(r"\d", x)) or x[0] == ":":  # name contains integer
+            pass  # do not convert canonical FCE4/FCE4M names
+        elif x[0] == "H":
+            tmp.append("HWY")  # kind, color, breakable
+            if len(x) > 3:
+                tmp.append(x[3])  # flashing
+            else:
+                tmp.append("N")
+            tmp.append("5")  # intensity
+            if len(x) > 3 and x[3] != "N":
+                tmp.append("5")  # time
+                if x[2] == "L":
+                    tmp.append("0")  # delay
+                else:  # == "R"
+                    tmp.append("5")  # delay
+            dms_names[i] = "".join(tmp)
+        elif x[0] == "T":
+            tmp.append("TRYN5")  # kind, color, breakable, flashing, intensity
+            dms_names[i] = "".join(tmp)
+        elif x[0] == "M":
+            tmp.append("S")  # kind
+            if len(x) > 2 and x[2] == "L":  # left
+                tmp.append("RNO535")  # color, breakable, flashing, intensity, time, delay
+            else:  # == "R"  # right
+                tmp.append("BNE530")
+            dms_names[i] = "".join(tmp)
+        print(x, "->", dms_names[i])
+    return dms_pos, dms_names
+
+def workload_ConvertDummies_Fce3_to_Fce4_(filepath_fce_input, fce_outversion):
+    filepath_fce_output = filepath_fce_input
+
+    mesh = fc.Mesh()
+    mesh = LoadFce(mesh, filepath_fce_input)
+
+    dms_pos, dms_names = GetDummies(mesh)
+    dms_pos, dms_names = DummiesFce3ToFce4(dms_pos, dms_names)
+    mesh = SetDummies(mesh, dms_pos, dms_names)
+
+    WriteFce(fce_outversion, mesh, filepath_fce_output)
+
+# -------------------------------------- bfut_ConvertDummies (to Fce3) (Fce3 to Fce4)
+#########################################################
+
+
+# classes
+class FcecodecImport(Operator, ImportHelper):
+    """Load an FCE file, powered by fcecodec"""      # Use this as a tooltip for menu items and buttons.
+    bl_idname = "import_scene.fce"        # Unique identifier for buttons and menu items to reference.
+    bl_label = "Import FCE"         # Display name in the interface.
+    bl_options = {"REGISTER", "UNDO"}  # Enable undo for the operator.
+
+    filter_glob: StringProperty(default="*.fce;*.tga", options={"HIDDEN"})
 
     files: CollectionProperty(
         name="File Path",
@@ -674,46 +844,61 @@ class FcecodecImport(Operator, ImportHelper):
     )
 
     print_damage: BoolProperty(
-        name='Load damage model',
-        description='Import parts damage models as extra objects DAMAGE_*',
+        name="Load damage model",
+        description="Import parts damage models as extra objects DAMAGE_*",
         default=True
     )
 
     print_dummies: BoolProperty(
-        name='Load dummies',
-        description='Import dummies as extra objects DUMMY_*',
+        name="Load dummies",
+        description="Import dummies as extra objects DUMMY_*",
         default=True
     )
 
     use_part_positions: BoolProperty(
-        name='Use part positions',
-        description='Load relative part positions from the file and apply them to the parts',
+        name="Use part positions",
+        description="Load relative part positions from the file and apply them to the parts",
         default=True
     )
 
     print_part_positions: BoolProperty(
-        name='Load part positions as objects',
-        description='Import parts positions as extra objects POSITION_*',
+        name="Load part positions as objects",
+        description="Import parts positions as extra objects POSITION_*",
         default=True
     )
 
-    def __init__(self):
-        pass
+    fce_filter_triagflags_0xfff: BoolProperty(
+        name="Triangle flag 12-bit mask",
+        description="Mask triangle flags. YOu may want to experiment with turning this off for MCO imports. ",
+        default=True
+    )
 
-    # draws checkboxes in the import dialog
+    fce_restrict_texpage: BoolProperty(
+        name="Restrict to selected texpage",
+        description="ONLY RECOMMENDED for MCO. Load triangles with selected texpage only.",
+        default=False
+    )
+
+    fce_select_texpage: IntProperty(
+        name="Select texpage",
+        description="ONLY RECOMMENDED for MCO (0, 1, 2). NFS 3 & HS officer models / road objects are in (0-8) ",
+        default=0, min=0, max=16)
+
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
         # layout.use_property_decorate = False  # No animation.
-        layout.prop(self, 'print_damage')
-        layout.prop(self, 'print_dummies')
-        layout.prop(self, 'print_part_positions')
-        layout.prop(self, 'use_part_positions')
+        layout.prop(self, "print_damage")
+        layout.prop(self, "print_dummies")
+        layout.prop(self, "print_part_positions")
+        layout.prop(self, "use_part_positions")
+        layout.prop(self, "fce_filter_triagflags_0xfff")
+        layout.prop(self, "fce_restrict_texpage")
+        layout.prop(self, "fce_select_texpage")
 
-    # execute() is called when running the operator.
     def execute(self, context):
-        # path = pathlib.Path(self.filepath)
         pdir = pathlib.Path(self.filepath).parent
+        # path = pathlib.Path(self.filepath)
         path = None
         texname = ""
         if self.files:
@@ -722,103 +907,172 @@ class FcecodecImport(Operator, ImportHelper):
                 if fp.suffix.lower() == ".fce":
                     path = pdir / fp
                     break
+
+            # if TGA selected in import dialog
             for f in self.files:
                 fp = pathlib.Path(f.name)
                 if fp.suffix.lower() == ".tga":
                     texname = pdir / fp
                     break
 
+            # if no TGA selected in import dialog, heuristic TGA search
+            # priority: <file>.tga <file>00.tga <any>.tga
+            if not texname and path:
+                pl = list(path.parent.iterdir())
+                pl.sort()
+                for f in pl:
+                    fp = pathlib.Path(f.name)
+                    if fp.suffix.lower() != ".tga":
+                        continue
+                    if fp.stem.lower() == path.stem.lower():
+                        texname = pdir / fp
+                        break
+                    if fp.stem.lower() == path.stem.lower() + "00":
+                        texname = pdir / fp
+                        break
+                if not texname:
+                    for f in pl:
+                        fp = pathlib.Path(f.name)
+                        if fp.suffix.lower() == ".tga":
+                            texname = pdir / fp
+                            break
+
         print(f"path: {path}")
         print(f"texname: {texname}")
 
         if not path:
-            return {'CANCELLED'}
+            return {"CANCELLED"}
 
         # paths to temporary files
         time_suffix = str(time.time())
-        path_obj = path.with_name(path.stem + "_" + time_suffix).with_suffix(".obj")
-        path_mtl = path.with_name(path.stem + "_" + time_suffix).with_suffix(".mtl")
+        tdir = pathlib.Path(tempfile.gettempdir())
+        path_obj = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".obj")
+        path_mtl = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".mtl")
 
-        # PrintFceInfo(path)
+        PrintFceInfo(path)
+
+        ptn = time.process_time_ns()
         mesh = fc.Mesh()
         mesh = LoadFce(mesh, path)
-        ExportObj(mesh, path_obj, path_mtl, texname, self.print_damage, self.print_dummies, self.use_part_positions, self.print_part_positions)
-        bpy.ops.wm.obj_import(filepath=str(path_obj))
+        print(f"FCE import of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
 
-        clrs = mesh.MGetColors()
+
+        ptn = time.process_time_ns()
+        print(f"self.fce_restrict_texpage={self.fce_restrict_texpage}")
+        if self.fce_restrict_texpage:
+            mesh = FilterTexpageTriags(mesh, select_texpages=self.fce_select_texpage)
+        mesh = DeleteEmptyParts(mesh)
+        ExportObj(mesh, path_obj, path_mtl, texname, self.print_damage, self.print_dummies, self.use_part_positions, self.print_part_positions,
+                  filter_triagflags_0xfff=self.fce_filter_triagflags_0xfff)
+        print(f"OBJ export to '{path_obj.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+
+
+        bpy.ops.wm.obj_import(filepath=str(path_obj))
 
         # cleanup
         path_obj.unlink()
         path_mtl.unlink()
 
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class FcecodecExport(Operator, ExportHelper):
-    # https://github.com/blender/blender-addons/tree/main/io_scene_gltf2
-
-    """Using fcecodec, import an FCE file"""      # Use this as a tooltip for menu items and buttons.
+    """Save an FCE file, powered by fcecodec"""      # Use this as a tooltip for menu items and buttons.
     bl_idname = "export_scene.fce"        # Unique identifier for buttons and menu items to reference.
-    bl_label = "Need For Speed (.fce)"         # Display name in the interface.
+    bl_label = "Export FCE"         # Display name in the interface.
 
-    filename_ext = ''
+    filename_ext = ""
 
-    filter_glob: StringProperty(default='*.fce', options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.fce", options={"HIDDEN"})
 
     export_selected_objects: BoolProperty(
-        name='Limit export to selected objects',
-        description='Ignore parts that are not selected. ',
+        name="Limit export to selected objects",
+        description="Ignore parts that are not selected. ",
         default=False
     )
 
+    obj_rescale_factor: FloatProperty(
+        name="Scale",
+        description="Rescale model on write. ",
+        default=1.0, min=0.1, max=10.0)
+
     fce_version: EnumProperty(
-        name='Format',
-        items=(('3', 'NFS3 (.fce)',
-                'Exports a single file, compatible with NFS3: Hot Pursuit. '
-                'This format does not feature damage models.'),
-               ('4', 'NFS:HS (.fce)',
-                'Exports a single file, compatible with NFS: High Stakes. '
-                'Easiest to edit later, includes damage models.'),
-               ('4M', 'MCO (.fce)',
-                'Exports a single file, compatible with Motor City Online. '
-                'Includes damage models.'),),
+        name="Format",
+        items=(("3", "NFS3 (.fce)",
+                "Exports a single file, compatible with NFS3: Hot Pursuit. "
+                "This format does not feature damage models."),
+               ("4", "NFS:HS (.fce)",
+                "Exports a single file, compatible with NFS: High Stakes. "
+                "Includes damage models. Also a common FCE exchange format. "),
+               ("4M", "MCO (.fce)",
+                "Exports a single file, compatible with Motor City Online. "
+                "Includes damage models."),),
         description=(
-            'Output format. NFS3 and NFS:HS '
-            'are the the most common formats.'
+            "Output format. NFS3 and NFS:HS "
+            "are the most common formats."
         ),
-        default=0,  # Warning => If you change the default, need to change the default filter too
+        default=0
+    )
+
+    fce_convertdummies: BoolProperty(
+        name="Convert dummies (light/fx objects)",
+        description="Try converting light & fx objects to output FCE format. ",
+        default=True
+    )
+
+    fce_reordertriags: BoolProperty(
+        name="Semi-transparency fix",
+        description="RECOMMENDED for NFS3 & HS models with transparent triangles. ",
+        default=True
     )
 
     fce_material2texpage: BoolProperty(
-        name='Map materials to FCE texture pages',
-        description='Maps face materials to FCE texpages. '
-                     'Only relevant for NFS3 & HS officer models, NFS:HS road objects, and MCO',
+        name="Map materials to FCE texture pages",
+        description="Maps face materials to FCE texpages. "
+                     "ONLY check for NFS3 & HS officer models, NFS:HS road objects, and MCO",
         default=False
     )
 
-    fce_num_arts: IntProperty(
-        name='Number of arts',
-        description='Must be set to 1 for NFS3 and NFS:HS unless you know what you are doing. ',
-        default=1,
-        min=0,
-        max=30
+    fce_modify_num_arts: BoolProperty(
+        name="Export officer or road object",
+        description="ONLY check for NFS3 & HS officer models, NFS:HS road objects. ",
+        default=False
     )
 
-    fce_rescale_factor: FloatProperty(
-        name='Scale',
-        description='Warning: Values other than 1.0 will reset custom part positions.',
-        default=1.0, min=0.1, max=10.0)
+    fce_write_color: BoolProperty(
+        name="Color",
+        description="Write color to FCE. ",
+        default=True
+    )
+    fce_color_picker: FloatVectorProperty(
+        name="Color picker",
+        subtype = "COLOR",
+        default = (0.0, 0.17, 1.0, 1.0),
+        size=4,
+        min = 0.0,
+        max = 1.0,
+        # step=100,
+    )
+
 
     # draws checkboxes in the import dialog
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
         # layout.use_property_decorate = False  # No animation.
-        layout.prop(self, 'export_selected_objects')
-        layout.prop(self, 'fce_version')
-        layout.prop(self, 'fce_material2texpage')
-        layout.prop(self, 'fce_num_arts')
-        layout.prop(self, 'fce_rescale_factor')
+        layout.prop(self, "export_selected_objects")
+        layout.prop(self, "obj_rescale_factor")
+
+        layout.prop(self, "fce_version")
+        layout.prop(self, "fce_convertdummies")
+        layout.prop(self, "fce_reordertriags")
+
+        layout.prop(self, "fce_material2texpage")
+        layout.prop(self, "fce_modify_num_arts")
+
+        layout.prop(self, "fce_write_color")
+        layout.prop(self, "fce_color_picker")
+
 
     def execute(self, context):
         path = pathlib.Path(self.filepath)
@@ -827,17 +1081,19 @@ class FcecodecExport(Operator, ExportHelper):
 
         # paths to temporary files
         time_suffix = str(time.time())
-        path_obj = path.with_name(path.stem + "_" + time_suffix).with_suffix(".obj")
-        path_mtl = path.with_name(path.stem + "_" + time_suffix).with_suffix(".mtl")
+        tdir = pathlib.Path(tempfile.gettempdir())
+        path_obj = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".obj")
+        path_mtl = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".mtl")
 
         bpy.ops.wm.obj_export(filepath=str(path_obj),
+                              global_scale=self.obj_rescale_factor,
                               export_selected_objects=self.export_selected_objects,
                               export_materials=True,
                               export_triangulated_mesh=True)
 
         if path_obj.exists() is False:
             print(f"FCE export failed at OBJ export to '{path_obj}'")
-            return {'CANCELLED'}
+            return {"CANCELLED"}
 
         print(f"Writing to {path}")
         ptn = time.process_time_ns()
@@ -847,54 +1103,110 @@ class FcecodecExport(Operator, ExportHelper):
             "material2texpage"   : self.fce_material2texpage,  # maps OBJ face materials to FCE texpages (expects 0|1)
             "material2triagflag" : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
         }
-        # with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
-        #     workload_Obj2Fce(path_obj, path, CONFIG)
         workload_Obj2Fce(path_obj, path, CONFIG)
-        ptn = float(time.process_time_ns() - ptn) / 1e6
-        print(f"FCE export of '{path.name}' took {ptn:.2f} ms")
+        print(f"FCE export of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
 
 
         print(f"Apply options to {path}")
         ptn = time.process_time_ns()
 
-        if self.fce_rescale_factor < 0.1:
-            self.fce_rescale_factor = 1.0
-        if abs(1.0 - self.fce_rescale_factor) > 1e-3:
-            CONFIG = {
-                "fce_version"  : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
-                "center_parts" : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
-                "rescale_factor" : self.fce_rescale_factor,  # 1.1 and 1.2 give good results for vanilla FCE4/FCE4M models; unchanged if 1.0 or smaller than 0.1
-            }
-            workload_RescaleModel(path, self.fce_rescale_factor, self.fce_version, CONFIG)
 
         if self.fce_version == "3":
             workload_SortPartsToFce3Order(path, self.fce_version)
 
-        # TODO: For officer models and pursuit road objects,
-        # the NumArts value must equal the greatest used texture page minus 1. In all other cases, NumArts = 1.
-        if self.fce_num_arts != 1:
-            print(f"Setting NumArts to {self.fce_num_arts}")
+        if self.fce_convertdummies:
+            if self.fce_version == "3":
+                workload_ConvertDummies_to_Fce3_(path, self.fce_version)
+            else:
+                workload_ConvertDummies_Fce3_to_Fce4_(path, self.fce_version)
+
+
+        if self.fce_reordertriags:
             mesh = fc.Mesh()
             mesh = LoadFce(mesh, path)
-            mesh.MNumArts = self.fce_num_arts
+            WriteFce(self.fce_version, mesh, path, mesh_function=HiBody_ReorderTriagsTransparentToLast)
+
+
+        # colors...just a stop-gap measure at this time
+        if self.fce_write_color:
+            hls = colorsys.rgb_to_hls(
+                self.fce_color_picker[0],  # red
+                self.fce_color_picker[1],  # green
+                self.fce_color_picker[2],  # blue
+            )
+            hsbt = np.array([
+                int(hls[0] * 255),  # hue
+                int(hls[2] * 255),  # saturation
+                int(hls[1] * 255),  # brightness (lightness)
+                int(self.fce_color_picker[3] * 255),  # transparency (also lightness)
+            ], dtype=np.uint8)
+
+            # hsbt2 = hsbt.copy()
+            # hsbt2[3] = 127
+
+            # hsbt3 = hsbt.copy()
+            # hsbt3[3] = 255
+
+            tcolor = np.array([
+                [
+                    hsbt,  # PriColor per MSetColors()
+                    hsbt,  # IntColor per MSetColors()
+                    hsbt,  # SecColor per MSetColors()
+                    hsbt,  # DriColor per MSetColors()
+                ],
+                # [
+                #     hsbt2,  # PriColor per MSetColors()
+                #     hsbt2,  # IntColor per MSetColors()
+                #     hsbt2,  # SecColor per MSetColors()
+                #     hsbt2,  # DriColor per MSetColors()
+                # ],
+                # [
+                #     hsbt3,  # PriColor per MSetColors()
+                #     hsbt3,  # IntColor per MSetColors()
+                #     hsbt3,  # SecColor per MSetColors()
+                #     hsbt3,  # DriColor per MSetColors()
+                # ],
+            ], dtype=np.uint8)
+            print(f"tcolor: {tcolor} ({tcolor.shape})")
+
+            mesh = fc.Mesh()
+            mesh = LoadFce(mesh, path)
+            mesh.MSetColors(tcolor)
             WriteFce(self.fce_version, mesh, path)
-            PrintFceInfo(path)
+
+
+        # For officer models and pursuit road objects, the NumArts value must equal the greatest used texture page minus 1.
+        # In all other cases, NumArts = 1.
+        if self.fce_modify_num_arts:
+            print(f"Setting NumArts from existing texture page")
+            val = 1
+            mesh = fc.Mesh()
+            mesh = LoadFce(mesh, path)
+            for pidx in range(mesh.MNumParts):
+                texps = mesh.PGetTriagsTexpages(pidx)
+                val = max(val, np.amax(texps) - 1)
+                print(f"part {pidx} texpage range: {np.amin(texps)}-{np.amax(texps)}")
+            mesh.MNumArts = val
+            print(f"mesh.MNumArts: {mesh.MNumArts}")
+            WriteFce(self.fce_version, mesh, path)
+
 
         ptn = float(time.process_time_ns() - ptn) / 1e6
+        PrintFceInfo(path)
         print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
 
         # cleanup
         path_obj.unlink()
         path_mtl.unlink()
 
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 def menu_func_import(self, context):
-    self.layout.operator(FcecodecImport.bl_idname)
+    self.layout.operator(FcecodecImport.bl_idname, text="Need For Speed (.fce)")
 
 def menu_func_export(self, context):
-    self.layout.operator(FcecodecExport.bl_idname)
+    self.layout.operator(FcecodecExport.bl_idname, text="Need For Speed (.fce)")
 
 def register():
     bpy.utils.register_class(FcecodecImport)
