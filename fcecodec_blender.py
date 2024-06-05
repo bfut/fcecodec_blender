@@ -34,7 +34,7 @@
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -118,7 +118,7 @@ def HiBody_ReorderTriagsTransparentToLast(mesh, version):
     """ Not implemented for FCE4M because windows are separate parts """
     if version in ("3", 3):
         mesh = ReorderTriagsTransparentDetachedAndToLast(mesh, 0)  # high body
-        if mesh.MNumParts >= 12:
+        if mesh.MNumParts > 12:
             mesh = ReorderTriagsTransparentDetachedAndToLast(mesh, 12)  # high headlights
     elif version in ("4", 4):
         for partname in (":HB", ":OT", ":OL"):
@@ -210,7 +210,7 @@ def FilterTexpageTriags(mesh, drop_texpages: int | list | None = None, select_te
             print(f"after: mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
 
     else:
-        ValueError("FilterTexpageTriags: call with either drop_texpages or select_texpages, not both")
+        raise ValueError("FilterTexpageTriags: call with either drop_texpages or select_texpages, not both")
 
     # assert mesh.OpDelUnrefdVerts()
     return mesh
@@ -245,20 +245,25 @@ def LoadObj(filename):
 def GetVerts(reader):  # xyzxyzxyz
     attrib = reader.GetAttrib()
     arr = attrib.numpy_vertices()
-    # print(arr)
-    print(type(attrib.numpy_vertices()), arr.shape, arr.ndim)
+    print(f"GetVerts: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
     return arr
 
 def GetNormals(reader):  # xyzxyzxyz
     attrib = reader.GetAttrib()
     arr = np.array(attrib.normals)
-    print(type(arr), arr.shape, arr.ndim)
+    if arr.shape[0] == 0:
+        print(f"GetNormals: {type(arr)}, {arr.shape}, {arr.ndim} min,max=n/a;n/a")
+    else:
+        print(f"GetNormals: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
     return arr
 
 def GetTexcoords(reader):  # uvuvuv
     attrib = reader.GetAttrib()
     arr = np.array(attrib.texcoords)
-    print(type(arr), arr.shape, arr.ndim)
+    if arr.shape[0] == 0:
+        print(f"GetTexcoords: {type(arr)}, {arr.shape}, {arr.ndim} min,max=n/a;n/a")
+    else:
+        print(f"GetTexcoords: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
     return arr
 
 def PrintShapes(reader):
@@ -266,7 +271,7 @@ def PrintShapes(reader):
     print("Num shapes: ", len(shapes))
     for shape in shapes:
         print(shape.name,
-              f"faces={int(shape.mesh.numpy_indices().shape[0] / 3)}")
+              f"faces={int(shape.mesh.numpy_indices().shape[0] / (3*3))}")
 
 def GetShapeNames(reader):
     shapenames = []
@@ -292,8 +297,8 @@ def GetShapeFaces(reader, vertices, normals, texcoords, shapename):
     texcoord_idxs = shape.mesh.numpy_indices()[2::3]
 
     print(shape.name, f"faces={int(s_faces.shape[0] / 3)}")
-    print(shape.name, f"normals={int(normals_idxs.shape[0])}")
-    print(shape.name, f"texcoords={int(texcoord_idxs.shape[0])}")
+    print(shape.name, f"normals_idxs={int(normals_idxs.shape[0])} min,max={np.min(normals_idxs)};{np.max(normals_idxs)}")
+    print(shape.name, f"texcoord_idxs={int(texcoord_idxs.shape[0])} min,max={np.min(texcoord_idxs)};{np.max(texcoord_idxs)}")
 
     # cannot use np.unique(), as shape may have unreferenced verts
     # example: mcf1/car.viv->car.fce :HB
@@ -325,12 +330,16 @@ def GetShapeFaces(reader, vertices, normals, texcoords, shapename):
         print("shape has no normals... use vert positions as normals")
         s_norms = np.copy(s_verts)
 
+    # Get tex coordinate (set 0.0f, if not enough texcoords)
     print("GetShapeFaces: uvuvuv... -> uuuvvv...")
-    s_texcs = np.empty(s_NumFaces * 6)
-    for i in range(s_NumFaces):
-        for j in range(3):
-            s_texcs[i*6 + 0*3 + j] = texcoords[texcoord_idxs[i*3 + j] * 2 + 0]
-            s_texcs[i*6 + 1*3 + j] = texcoords[texcoord_idxs[i*3 + j] * 2 + 1]
+    s_texcs = np.zeros(s_NumFaces * 6, dtype=float)
+    if texcoord_idxs.shape[0] == s_NumFaces * 3:
+        for i in range(s_NumFaces):
+            for j in range(3):
+                s_texcs[i*6 + 0*3 + j] = texcoords[texcoord_idxs[i*3 + j] * 2 + 0]
+                s_texcs[i*6 + 1*3 + j] = texcoords[texcoord_idxs[i*3 + j] * 2 + 1]
+    else:
+        print(f"shape has missing texcoords... set 0.0f (texcoord_idxs.shape {texcoord_idxs.shape[0]} != {s_NumFaces * 6} s_NumFaces*6)")
 
     s_matls = shape.mesh.numpy_material_ids()
 
@@ -385,7 +394,7 @@ def GetTexPageFromTags(tags):
 
 def ShapeToPart(reader,
                 mesh, objverts, objnorms, objtexcoords, request_shapename,
-                material2texpage, material2triagflag):
+                material2texpage, material2triagflag, normals2verts):
     s_faces, s_verts, s_norms, s_texcs, s_matls = GetShapeFaces(reader,
         objverts, objnorms, objtexcoords, request_shapename)
     print(f"faces:{int(s_faces.shape[0] / 3)}")
@@ -399,7 +408,11 @@ def ShapeToPart(reader,
 
     s_verts[2::3] = -s_verts[2::3]  # flip sign in Z-coordinate
     s_norms[2::3] = -s_norms[2::3]  # flip sign in Z-coordinate
-    mesh.IoGeomDataToNewPart(s_faces, s_texcs, s_verts, s_norms)
+    if normals2verts == True and s_verts.shape[0] == s_norms.shape[0]:
+        print("normals as vertices...")
+        mesh.IoGeomDataToNewPart(s_faces, s_texcs, s_norms, s_norms)  # normals as vertices
+    else:
+        mesh.IoGeomDataToNewPart(s_faces, s_texcs, s_verts, s_norms)  # default
     mesh.PSetName(mesh.MNumParts - 1, request_shapename)  # shapename to partname
 
     # map faces material IDs to triangles texpages
@@ -414,9 +427,11 @@ def ShapeToPart(reader,
             mat_ = re.sub(r"\.(.*)", "", mat_)
             if mat_[:2] == "0x":
                 texps[i] = int(mat_, base=16)
+                # print(f"{mat_} -> {texps[i]} (0x{texps[i]:0x})")
             else:
                 tags = mat_.split("_")
                 texps[i] = GetTexPageFromTags(tags)
+                # print(f"{mat_} -> {tags} -> {texps[i]} (0x{texps[i]:0x})")
             if texps[i] > 0:
                 num_arts_warning = True
         # print(type(texps), texps.dtype, texps.shape)
@@ -439,9 +454,11 @@ def ShapeToPart(reader,
             mat_ = re.sub(r"\.(.*)", "", mat_)
             if mat_[:2] == "0x":
                 tflags[i] = int(mat_, base=16)
+                # print(f"{mat_} -> {tflags[i]} (0x{tflags[i]:0x})")
             else:
                 tags = mat_.split("_")
                 tflags[i] = GetFlagFromTags(tags)
+                # print(f"{mat_} -> {tags} -> {tflags[i]} (0x{tflags[i]:0x})")
         mesh.PSetTriagsFlags(mesh.MNumParts - 1, tflags)
 
     return mesh
@@ -593,9 +610,31 @@ def CenterParts(mesh):
         mesh.OpDeletePart(i)
     return mesh
 
+def FixPartDummyNames(mesh):
+    """
+    Change any "<name>.001" -> "<name>"
+
+    Blender may export partnames/dummynames such as "<name>.001"
+    """
+    dm = mesh.MGetDummyNames()
+    for i in range(len(dm)):
+        tmp_1 = dm[i]
+        tmp_ = re.sub(r"\.(.*)", "", tmp_1)
+        print(f"{tmp_1}->{tmp_}")
+        dm[i] = tmp_
+    mesh.MSetDummyNames(dm)
+    for pid in range(mesh.MNumParts):
+        tmp_1 = mesh.PGetName(pid)
+        tmp_ = re.sub(r"\.(.*)", "", tmp_1)
+        print(f"{tmp_1}->{tmp_}")
+        mesh.PSetName(pid, tmp_)
+    return mesh
+
 
 #
 def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
+    print(CONFIG)
+
     # Import OBJ
     reader = LoadObj(filepath_obj_input)
     attrib = reader.GetAttrib()
@@ -614,7 +653,9 @@ def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
         print("s_name", shapenames[i])
         mesh = ShapeToPart(reader,
                         mesh, objverts, objnorms, objtexcoords, shapenames[i],
-                        CONFIG["material2texpage"], CONFIG["material2triagflag"])
+                        CONFIG["material2texpage"], CONFIG["material2triagflag"],
+                        CONFIG["debug_export_normals"])
+    mesh = FixPartDummyNames(mesh)
     mesh = CopyDamagePartsVertsToPartsVerts(mesh)
     mesh = PartsToDummies(mesh)
     mesh = SetAnimatedVerts(mesh)
@@ -640,11 +681,14 @@ def PrintMeshParts_order(mesh, part_names_sorted):
     for pid in range(mesh.MNumParts):
         print(f"{pid:<2} {mesh.PGetName(pid):<12} {part_names_sorted[pid]:<12}")
 
-def AssertPartsOrder(mesh, part_names_sorted):
+def AssertPartsOrder(mesh, part_names_sorted, onlywarn=False):
     for pid in range(mesh.MNumParts):
         if mesh.PGetName(pid) != part_names_sorted[pid]:
             PrintMeshParts_order(mesh, part_names_sorted)
-            raise AssertionError (f"pid={pid} {mesh.PGetName(pid)} != {part_names_sorted[pid]}")
+            if not onlywarn:
+                raise AssertionError (f"pid={pid} {mesh.PGetName(pid)} != {part_names_sorted[pid]}")
+            print(f"AssertPartsOrder: Warning pid={pid} {mesh.PGetName(pid)} != {part_names_sorted[pid]}")
+
 
 def workload_SortPartsToFce3Order(filepath_fce_input, fce_outversion):
     filepath_fce_output = filepath_fce_input
@@ -697,7 +741,7 @@ def workload_SortPartsToFce3Order(filepath_fce_input, fce_outversion):
             # print(f" {pname} {current_idx} -> {target_idx}")
             while current_idx > target_idx:
                 current_idx = mesh.OpMovePart(current_idx)
-        AssertPartsOrder(mesh, part_names_sorted)
+        AssertPartsOrder(mesh, part_names_sorted, onlywarn=True)
         # PrintMeshParts(mesh, part_names_sorted)
 
 
@@ -728,12 +772,14 @@ def SetDummies(mesh, dms_pos, dms_names):
 def DummiesToFce3(dms_pos, dms_names):
     for i in range(len(dms_names)):
         x = dms_names[i]
-        """
-        if x[0] in [":", "B", "I", "M", "P", "R"]:
-            print(x, "->", dms_names[i])
-            continue
+        if len(str(x)) < 1:
+            pass
         # """
-        if x[:4] in ["HFLO", "HFRE", "HFLN", "HFRN", "TRLO", "TRRE", "TRLN",
+        # elif x[0] in [":", "B", "I", "M", "P", "R"]:
+        #     print(x, "->", dms_names[i])
+        #     continue
+        # # """
+        elif x[:4] in ["HFLO", "HFRE", "HFLN", "HFRN", "TRLO", "TRRE", "TRLN",
                      "TRRN", "SMLN", "SMRN"]:
             pass  # keep canonical FCE3 names
         elif x[0] == "B":
@@ -784,7 +830,9 @@ def DummiesFce3ToFce4(dms_pos, dms_names):
     for i in range(len(dms_names)):
         x = dms_names[i]
         tmp = []
-        if bool(re.search(r"\d", x)) or x[0] == ":":  # name contains integer
+        if len(str(x)) < 1:
+            pass
+        elif bool(re.search(r"\d", x)) or x[0] == ":":  # name contains integer
             pass  # do not convert canonical FCE4/FCE4M names
         elif x[0] == "H":
             tmp.append("HWY")  # kind, color, breakable
@@ -829,6 +877,174 @@ def workload_ConvertDummies_Fce3_to_Fce4_(filepath_fce_input, fce_outversion):
 #########################################################
 
 
+#########################################################
+# -------------------------------------- bfut_ConvertPartnames (Fce4 to Fce4M) (Fce3 to Fce4)
+
+def Partnames3to4_car(mesh):
+    # car.fce
+    # NB1: front wheel order is different for high body/medium body
+    pnames_map = [
+        ":HB",  # high body
+        ":HLFW",  # left front wheel
+        ":HRFW",  # right front wheel
+        ":HLRW",  # left rear wheel
+        ":HRRW",  # right rear wheel
+        ":MB",  # medium body
+        ":MRFW",  # medium r front wheel
+        ":MLFW",  # medium l front wheel
+        ":MRRW",  # medium r rear wheel
+        ":MLRW",  # medium l rear wheel
+        ":LB",  # small body
+        ":TB",  # tiny body
+        ":OL",  # high headlights
+    ]
+    for pid in range(min(len(pnames_map), mesh.MNumParts)):
+        mesh.PSetName(pid, pnames_map[pid])
+        print(f"renaming part {pid} -> '{pnames_map[pid]}'")
+    return mesh
+
+def Partnames4to4M_car(mesh):
+    # car.fce
+    # FCE4M loads meshes for wheels, drivers, and enhanced parts from central files.
+    pnames_map = {
+        ":HB": ":Hbody",
+        # ":MB": ,
+        # ":LB": ,
+        # ":TB": ,
+        ":OT": ":Hconvertible",
+        ":OL": ":Hheadlight",
+        ":OS": ":PPspoiler",
+        ":OLB": ":Hlbrake",
+        ":ORB": ":Hrbrake",
+        ":OLM": ":Hlmirror",
+        ":ORM": ":Hrmirror",
+        ":OC": ":Hinterior",
+        ":ODL": ":Hdashlight",
+        # ":OH": ,
+        ":OD": ":PPdriver",
+        # ":OND": ,
+        ":HLFW": ":PPLFwheel",
+        ":HRFW": ":PPRFwheel",
+        # ":HLMW": ,
+        # ":HRMW": ,
+        ":HLRW": ":PPLRwheel",
+        ":HRRW": ":PPRRwheel",
+        # ":MLFW": ,
+        # ":MRFW": ,
+        # ":MLMW": ,
+        # ":MRMW": ,
+        # ":MLRW": ,
+        # ":MRRW": ,
+    }
+    for pid in range(mesh.MNumParts):
+        pname = mesh.PGetName(pid)
+        new_pname = pnames_map.get(pname, None)
+        if not new_pname is None:
+            mesh.PSetName(pid, new_pname)
+            print(f"renaming part {pid} '{pname}' -> '{new_pname}'")
+    return mesh
+
+def AddPartAtPositionForLicenseDummy(mesh):
+    """
+    If license dummy exists, add FCE4M ":PPlicense"-part  at dummy position
+    Do nothing, if ":PPlicense" already exists.
+    """
+    # lic_list = [":LICENSE_EURO", ":LICENSE EURO", ":LICENSE", ":LICMED", ":LICLOW"]
+    lic_list = [":LICENS", ":LICMED", ":LICLOW"]
+    dms_names = mesh.MGetDummyNames()
+    dms_names = [name[:7] for name in dms_names]
+    for lic in lic_list:
+        if GetMeshPartnameIdx(mesh, ":PPlicense") >= 0:
+            break
+        if lic in dms_names:
+            didx = dms_names.index(lic)
+            dms_pos = mesh.MGetDummyPos()[3*didx:3*didx + 3]
+            new_pid = mesh.OpAddHelperPart(":PPlicense", dms_pos)
+            print(f"adding dummy part {new_pid} ':PPlicense'")
+            break
+    return mesh
+
+def workload_ConvertPartnames_Fce3_to_Fce4_(mesh, fce_outversion):
+    if fce_outversion not in ["3", 3]:
+        return mesh
+    # filepath_fce_output = filepath_fce_input
+
+    # # Load FCE
+    # mesh = fc.Mesh()
+    # mesh = LoadFce(mesh, filepath_fce_input)
+
+    if mesh.MNumParts < 1:
+        print("ConvertPartnames: FCE must have at least 1 part.")
+        return
+
+    # Convert partnames
+    # if CONFIG["script_version"] == "34":
+    mesh = Partnames3to4_car(mesh)
+    # elif CONFIG["script_version"] == "4M":
+    #     mesh = Partnames4to4M_car(mesh)
+    #     mesh = AddPartAtPositionForLicenseDummy(mesh)
+
+    # WriteFce(fce_outversion, mesh, filepath_fce_output)
+    return mesh
+
+def workload_ConvertPartnames_Fce4_to_Fce4M_(filepath_fce_input, fce_outversion):
+    if fce_outversion not in ["4M", "5", 5]:
+        return
+    filepath_fce_output = filepath_fce_input
+
+    # Load FCE
+    mesh = fc.Mesh()
+    mesh = LoadFce(mesh, filepath_fce_input)
+
+    if mesh.MNumParts < 1:
+        print("ConvertPartnames: FCE must have at least 1 part.")
+        return
+
+    # Convert partnames
+    # if CONFIG["script_version"] == "34":
+    #     mesh = Partnames3to4_car(mesh)
+    # elif CONFIG["script_version"] == "4M":
+    mesh = Partnames4to4M_car(mesh)
+    mesh = AddPartAtPositionForLicenseDummy(mesh)
+
+    WriteFce(fce_outversion, mesh, filepath_fce_output)
+
+# -------------------------------------- bfut_ConvertPartnames (Fce4 to Fce4M) (Fce3 to Fce4)
+#########################################################
+def HeuristicTgaSearch(path, suffix=".tga"):
+    """
+    Heuristic search for TGA file in the same directory as the given file path.
+    Returns "path/to/texname.tga" if found, else empty string.
+
+    priority: <file>.tga <file>00.tga <any>.tga
+    """
+    path = pathlib.Path(path)
+    suffix = str(suffix).lower()
+    if not path.is_dir() and path.is_file():
+        pdir = path.parent
+    else:
+        pdir = path
+    texname = None
+    pl = list(pdir.iterdir())
+    pl.sort()
+    for f in pl:
+        fp = pathlib.Path(f.name)
+        if fp.suffix.lower() != suffix:
+            continue
+        if fp.stem.lower() == path.stem.lower():
+            texname = pdir / fp
+            break
+        if fp.stem.lower() == path.stem.lower() + "00":
+            texname = pdir / fp
+            break
+    if not texname:
+        for f in pl:
+            fp = pathlib.Path(f.name)
+            if fp.suffix.lower() == suffix:
+                texname = pdir / fp
+                break
+    return str(texname) if texname else ""
+
 # classes
 class FcecodecImport(Operator, ImportHelper):
     """Load an FCE file, powered by fcecodec"""      # Use this as a tooltip for menu items and buttons.
@@ -850,7 +1066,7 @@ class FcecodecImport(Operator, ImportHelper):
     )
 
     print_dummies: BoolProperty(
-        name="Load dummies",
+        name="Load dummies (light/fx objects)",
         description="Import dummies as extra objects DUMMY_*",
         default=True
     )
@@ -867,9 +1083,15 @@ class FcecodecImport(Operator, ImportHelper):
         default=True
     )
 
+    fce_convertFCE3partnames: BoolProperty(
+        name="Import as HS partnames (NFS3 only)",
+        description="RECOMMENDED On import, convert NFS3 partnames to NFS:HS partnames. ",
+        default=True
+    )
+
     fce_filter_triagflags_0xfff: BoolProperty(
         name="Triangle flag 12-bit mask",
-        description="Mask triangle flags. YOu may want to experiment with turning this off for MCO imports. ",
+        description="Mask triangle flags. You may want to experiment with turning this off for MCO imports. ",
         default=True
     )
 
@@ -888,13 +1110,25 @@ class FcecodecImport(Operator, ImportHelper):
         layout = self.layout
         layout.use_property_split = True
         # layout.use_property_decorate = False  # No animation.
-        layout.prop(self, "print_damage")
-        layout.prop(self, "print_dummies")
-        layout.prop(self, "print_part_positions")
-        layout.prop(self, "use_part_positions")
-        layout.prop(self, "fce_filter_triagflags_0xfff")
-        layout.prop(self, "fce_restrict_texpage")
-        layout.prop(self, "fce_select_texpage")
+
+        box = layout.box()
+        box.prop(self, "print_damage")
+        box.prop(self, "print_dummies")
+
+        box = layout.box()
+        box.prop(self, "print_part_positions")
+        box.prop(self, "use_part_positions")
+
+        box = layout.box()
+        box.prop(self, "fce_convertFCE3partnames")
+        box.prop(self, "fce_filter_triagflags_0xfff")
+
+        box = layout.box()
+        box.prop(self, "fce_restrict_texpage")
+        sub = box.row()
+        sub.enabled = self.fce_restrict_texpage
+        sub.prop(self, "fce_select_texpage")
+
 
     def execute(self, context):
         pdir = pathlib.Path(self.filepath).parent
@@ -916,26 +1150,13 @@ class FcecodecImport(Operator, ImportHelper):
                     break
 
             # if no TGA selected in import dialog, heuristic TGA search
-            # priority: <file>.tga <file>00.tga <any>.tga
-            if not texname and path:
-                pl = list(path.parent.iterdir())
-                pl.sort()
-                for f in pl:
-                    fp = pathlib.Path(f.name)
-                    if fp.suffix.lower() != ".tga":
-                        continue
-                    if fp.stem.lower() == path.stem.lower():
-                        texname = pdir / fp
-                        break
-                    if fp.stem.lower() == path.stem.lower() + "00":
-                        texname = pdir / fp
-                        break
-                if not texname:
-                    for f in pl:
-                        fp = pathlib.Path(f.name)
-                        if fp.suffix.lower() == ".tga":
-                            texname = pdir / fp
-                            break
+            texname = HeuristicTgaSearch(path)
+            if texname == "":
+                texname = HeuristicTgaSearch(path, ".png")
+            if texname == "":
+                texname = HeuristicTgaSearch(path, ".bmp")
+            if texname == "":
+                texname = HeuristicTgaSearch(path, ".jpg")
 
         print(f"path: {path}")
         print(f"texname: {texname}")
@@ -946,28 +1167,50 @@ class FcecodecImport(Operator, ImportHelper):
         # paths to temporary files
         time_suffix = str(time.time())
         tdir = pathlib.Path(tempfile.gettempdir())
-        path_obj = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".obj")
-        path_mtl = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".mtl")
+        path_obj = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".obj")
+        path_mtl = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".mtl")
+        path_obj = pathlib.Path(str(path_obj).replace(" ", "_"))
+        path_mtl = pathlib.Path(str(path_mtl).replace(" ", "_"))
+        path_obj = tdir / path_obj
+        path_mtl = tdir / path_mtl
 
         PrintFceInfo(path)
 
+
+        # Load FCE as mesh
         ptn = time.process_time_ns()
         mesh = fc.Mesh()
         mesh = LoadFce(mesh, path)
         print(f"FCE import of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
 
 
+        # Apply options to mesh
         ptn = time.process_time_ns()
-        print(f"self.fce_restrict_texpage={self.fce_restrict_texpage}")
+        if self.fce_convertFCE3partnames:
+            buf = path.read_bytes()
+            ver = fc.GetFceVersion(buf)
+            mesh = workload_ConvertPartnames_Fce3_to_Fce4_(mesh, ver)
+            del buf
         if self.fce_restrict_texpage:
             mesh = FilterTexpageTriags(mesh, select_texpages=self.fce_select_texpage)
         mesh = DeleteEmptyParts(mesh)
+        print(f"Applying options to '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+
+
+        # Export mesh to temporary OBJ
+        ptn = time.process_time_ns()
+        # mesh.PrintInfo()
         ExportObj(mesh, path_obj, path_mtl, texname, self.print_damage, self.print_dummies, self.use_part_positions, self.print_part_positions,
                   filter_triagflags_0xfff=self.fce_filter_triagflags_0xfff)
         print(f"OBJ export to '{path_obj.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
 
 
-        bpy.ops.wm.obj_import(filepath=str(path_obj))
+        # Import temporary OBJ to Blender
+        # https://docs.blender.org/api/current/bpy.ops.wm.html#bpy.ops.wm.obj_import
+        bpy.ops.wm.obj_import(filepath=str(path_obj)
+                            #   , validate_meshes=True
+                              )
+
 
         # cleanup
         path_obj.unlink()
@@ -996,6 +1239,25 @@ class FcecodecExport(Operator, ExportHelper):
         description="Rescale model on write. ",
         default=1.0, min=0.1, max=10.0)
 
+    obj_forward_axis: EnumProperty(
+        name="Forward Axis",
+        items=(("Z", "Z",
+                "Z axis"),
+               ("NEGATIVE_Z", "-Z",
+                "Negative Z axis"),),
+        # description=(
+        #     "Output format. NFS3 and NFS:HS "
+        #     "are the most common formats."
+        # ),
+        default="NEGATIVE_Z"
+    )
+
+    obj_apply_modifiers: BoolProperty(
+        name="Apply Modifiers",
+        description="Apply modifiers to exported meshes ",
+        default=True
+    )
+
     fce_version: EnumProperty(
         name="Format",
         items=(("3", "NFS3 (.fce)",
@@ -1012,6 +1274,12 @@ class FcecodecExport(Operator, ExportHelper):
             "are the most common formats."
         ),
         default=0
+    )
+
+    fce_convertpartnames: BoolProperty(
+        name="Convert partnames (HS to MCO only)",
+        description="Try converting partnames to output FCE format; try adding :PPLicense part. ",
+        default=True
     )
 
     fce_convertdummies: BoolProperty(
@@ -1044,6 +1312,7 @@ class FcecodecExport(Operator, ExportHelper):
         description="Write color to FCE. ",
         default=True
     )
+
     fce_color_picker: FloatVectorProperty(
         name="Color picker",
         subtype = "COLOR",
@@ -1054,24 +1323,45 @@ class FcecodecExport(Operator, ExportHelper):
         # step=100,
     )
 
+    fce_debug_export_normals: BoolProperty(
+        name="Export Normals as Verts",
+        description="DEBUG: replace vert positions with normals ",
+        default=False
+    )
+
 
     # draws checkboxes in the import dialog
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
         # layout.use_property_decorate = False  # No animation.
-        layout.prop(self, "export_selected_objects")
-        layout.prop(self, "obj_rescale_factor")
 
-        layout.prop(self, "fce_version")
-        layout.prop(self, "fce_convertdummies")
-        layout.prop(self, "fce_reordertriags")
+        box = layout.box()
+        box.prop(self, "export_selected_objects")
+        box.prop(self, "obj_rescale_factor")
+        box.prop(self, "obj_forward_axis")
+        box.prop(self, "obj_apply_modifiers")
 
-        layout.prop(self, "fce_material2texpage")
-        layout.prop(self, "fce_modify_num_arts")
+        box = layout.box()
+        box.prop(self, "fce_version")
+        box.prop(self, "fce_convertdummies")
+        sub = box.row()
+        sub.enabled = self.fce_version == "4M"
+        sub.prop(self, "fce_convertpartnames")
+        box.prop(self, "fce_reordertriags")
 
-        layout.prop(self, "fce_write_color")
-        layout.prop(self, "fce_color_picker")
+        box = layout.box()
+        box.prop(self, "fce_material2texpage")
+        box.prop(self, "fce_modify_num_arts")
+
+        box = layout.box()
+        box.prop(self, "fce_write_color")
+        sub = box.row()
+        sub.enabled = self.fce_write_color
+        sub.prop(self, "fce_color_picker")
+
+        box = layout.box()
+        box.prop(self, "fce_debug_export_normals")
 
 
     def execute(self, context):
@@ -1082,12 +1372,21 @@ class FcecodecExport(Operator, ExportHelper):
         # paths to temporary files
         time_suffix = str(time.time())
         tdir = pathlib.Path(tempfile.gettempdir())
-        path_obj = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".obj")
-        path_mtl = (tdir / (path.stem + "_" + time_suffix)).with_suffix(".mtl")
+        path_obj = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".obj")
+        path_mtl = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".mtl")
+        path_obj = pathlib.Path(str(path_obj).replace(" ", "_"))
+        path_mtl = pathlib.Path(str(path_mtl).replace(" ", "_"))
+        path_obj = tdir / path_obj
+        path_mtl = tdir / path_mtl
 
+        # https://docs.blender.org/api/current/bpy.ops.wm.html#bpy.ops.wm.obj_export
         bpy.ops.wm.obj_export(filepath=str(path_obj),
+                              forward_axis=self.obj_forward_axis,
                               global_scale=self.obj_rescale_factor,
+                              apply_modifiers=self.obj_apply_modifiers,
+                            #   export_eval_mode="DAG_EVAL_RENDER",
                               export_selected_objects=self.export_selected_objects,
+                              export_normals=True,
                               export_materials=True,
                               export_triangulated_mesh=True)
 
@@ -1098,10 +1397,11 @@ class FcecodecExport(Operator, ExportHelper):
         print(f"Writing to {path}")
         ptn = time.process_time_ns()
         CONFIG = {
-            "fce_version"        : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
-            "center_parts"       : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
-            "material2texpage"   : self.fce_material2texpage,  # maps OBJ face materials to FCE texpages (expects 0|1)
-            "material2triagflag" : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
+            "fce_version"          : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
+            "center_parts"         : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
+            "material2texpage"     : self.fce_material2texpage,  # maps OBJ face materials to FCE texpages (expects 0|1)
+            "material2triagflag"   : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
+            "debug_export_normals" :  self.fce_debug_export_normals,  #  (expects 0|1)
         }
         workload_Obj2Fce(path_obj, path, CONFIG)
         print(f"FCE export of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
@@ -1110,6 +1410,9 @@ class FcecodecExport(Operator, ExportHelper):
         print(f"Apply options to {path}")
         ptn = time.process_time_ns()
 
+        if self.fce_convertpartnames:
+            if self.fce_version == "4M":
+                workload_ConvertPartnames_Fce4_to_Fce4M_(path, self.fce_version)
 
         if self.fce_version == "3":
             workload_SortPartsToFce3Order(path, self.fce_version)
@@ -1127,7 +1430,7 @@ class FcecodecExport(Operator, ExportHelper):
             WriteFce(self.fce_version, mesh, path, mesh_function=HiBody_ReorderTriagsTransparentToLast)
 
 
-        # colors...just a stop-gap measure at this time
+        # colors... just a stop-gap measure
         if self.fce_write_color:
             hls = colorsys.rgb_to_hls(
                 self.fce_color_picker[0],  # red
