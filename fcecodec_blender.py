@@ -34,13 +34,14 @@
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (1, 1),
+    "version": (1, 2),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
     "category": "Import-Export",
     "url": "https://github.com/bfut/fcecodec_blender",
 }
+DEV_MODE = False
 
 import colorsys
 import pathlib
@@ -62,7 +63,7 @@ def pip_install(package, upgrade=False, pre=False, version: str | None = None):
         _call.append(package)
     subprocess.check_call(_call)
 
-min_fcecodec_version = "1.6"
+min_fcecodec_version = "1.7"
 try:
     import fcecodec as fc
     if fc.__version__ < min_fcecodec_version:
@@ -323,7 +324,7 @@ def GetShapeFaces(reader, vertices, normals, texcoords, shapename):
             norm_selection[i] = np.copy(vert_selection[i])
         else:
             norm_selection[i] = np.copy(normals_idxs[map_v_t[i]])
-    if np.amax(s_faces) <= int(normals.shape[0] / 3):
+    if np.amax(norm_selection) <= int(normals.shape[0] / 3):
         print("norm_selection")
         s_norms = normals.reshape(-1, 3)[ norm_selection ].flatten()  # normals[normals_idxs]
     else:
@@ -394,7 +395,7 @@ def GetTexPageFromTags(tags):
 
 def ShapeToPart(reader,
                 mesh, objverts, objnorms, objtexcoords, request_shapename,
-                material2texpage, material2triagflag, normals2verts):
+                material2texpage, material2triagflag):
     s_faces, s_verts, s_norms, s_texcs, s_matls = GetShapeFaces(reader,
         objverts, objnorms, objtexcoords, request_shapename)
     print(f"faces:{int(s_faces.shape[0] / 3)}")
@@ -408,11 +409,7 @@ def ShapeToPart(reader,
 
     s_verts[2::3] = -s_verts[2::3]  # flip sign in Z-coordinate
     s_norms[2::3] = -s_norms[2::3]  # flip sign in Z-coordinate
-    if normals2verts == True and s_verts.shape[0] == s_norms.shape[0]:
-        print("normals as vertices...")
-        mesh.IoGeomDataToNewPart(s_faces, s_texcs, s_norms, s_norms)  # normals as vertices
-    else:
-        mesh.IoGeomDataToNewPart(s_faces, s_texcs, s_verts, s_norms)  # default
+    mesh.IoGeomDataToNewPart(s_faces, s_texcs, s_verts, s_norms)
     mesh.PSetName(mesh.MNumParts - 1, request_shapename)  # shapename to partname
 
     # map faces material IDs to triangles texpages
@@ -652,15 +649,18 @@ def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
     for i in range(len(shapenames)):
         print("s_name", shapenames[i])
         mesh = ShapeToPart(reader,
-                        mesh, objverts, objnorms, objtexcoords, shapenames[i],
-                        CONFIG["material2texpage"], CONFIG["material2triagflag"],
-                        CONFIG["debug_export_normals"])
+                           mesh, objverts, objnorms, objtexcoords, shapenames[i],
+                           CONFIG["material2texpage"], CONFIG["material2triagflag"])
     mesh = FixPartDummyNames(mesh)
     mesh = CopyDamagePartsVertsToPartsVerts(mesh)
     mesh = PartsToDummies(mesh)
     mesh = SetAnimatedVerts(mesh)
     if CONFIG["center_parts"] == 1:
         mesh = CenterParts(mesh)
+    if CONFIG["normals2vertices"] == 1:
+        # replace verts with normals, preserve part positions
+        mesh.MVertsPos = mesh.MVertsNorms
+        mesh.MVertsDamgdPos = mesh.MVertsDamgdNorms
 
     # Write FCE
     WriteFce(CONFIG["fce_version"], mesh, filepath_fce_output, center_parts=False)
@@ -1054,6 +1054,12 @@ class FcecodecImport(Operator, ImportHelper):
 
     filter_glob: StringProperty(default="*.fce;*.tga", options={"HIDDEN"})
 
+    addon_dev_mode: BoolProperty(
+        name="Developer Mode",
+        description="Keep temp files",
+        default=False
+    )
+
     files: CollectionProperty(
         name="File Path",
         type=bpy.types.OperatorFileListElement,
@@ -1128,6 +1134,9 @@ class FcecodecImport(Operator, ImportHelper):
         sub = box.row()
         sub.enabled = self.fce_restrict_texpage
         sub.prop(self, "fce_select_texpage")
+
+        if DEV_MODE:
+            layout.prop(self, "addon_dev_mode")
 
 
     def execute(self, context):
@@ -1213,8 +1222,9 @@ class FcecodecImport(Operator, ImportHelper):
 
 
         # cleanup
-        path_obj.unlink()
-        path_mtl.unlink()
+        if not self.addon_dev_mode:
+            path_obj.unlink()
+            path_mtl.unlink()
 
         return {"FINISHED"}
 
@@ -1227,6 +1237,12 @@ class FcecodecExport(Operator, ExportHelper):
     filename_ext = ""
 
     filter_glob: StringProperty(default="*.fce", options={"HIDDEN"})
+
+    addon_dev_mode: BoolProperty(
+        name="Developer Mode",
+        description="Keep temp files",
+        default=False
+    )
 
     export_selected_objects: BoolProperty(
         name="Limit export to selected objects",
@@ -1241,14 +1257,13 @@ class FcecodecExport(Operator, ExportHelper):
 
     obj_forward_axis: EnumProperty(
         name="Forward Axis",
+        # nomenclatura per bpy.ops.wm.obj_export()
         items=(("Z", "Z",
                 "Z axis"),
                ("NEGATIVE_Z", "-Z",
                 "Negative Z axis"),),
         # description=(
-        #     "Output format. NFS3 and NFS:HS "
-        #     "are the most common formats."
-        # ),
+        #     "description " ),
         default="NEGATIVE_Z"
     )
 
@@ -1323,9 +1338,9 @@ class FcecodecExport(Operator, ExportHelper):
         # step=100,
     )
 
-    fce_debug_export_normals: BoolProperty(
+    fce_normals2vertices: BoolProperty(
         name="Export Normals as Verts",
-        description="DEBUG: replace vert positions with normals ",
+        description="Replace vert positions with normals ",
         default=False
     )
 
@@ -1361,7 +1376,10 @@ class FcecodecExport(Operator, ExportHelper):
         sub.prop(self, "fce_color_picker")
 
         box = layout.box()
-        box.prop(self, "fce_debug_export_normals")
+        box.prop(self, "fce_normals2vertices")
+
+        if DEV_MODE:
+            layout.prop(self, "addon_dev_mode")
 
 
     def execute(self, context):
@@ -1397,11 +1415,11 @@ class FcecodecExport(Operator, ExportHelper):
         print(f"Writing to {path}")
         ptn = time.process_time_ns()
         CONFIG = {
-            "fce_version"          : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
-            "center_parts"         : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
-            "material2texpage"     : self.fce_material2texpage,  # maps OBJ face materials to FCE texpages (expects 0|1)
-            "material2triagflag"   : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
-            "debug_export_normals" :  self.fce_debug_export_normals,  #  (expects 0|1)
+            "fce_version"        : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
+            "center_parts"       : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
+            "material2texpage"   : self.fce_material2texpage,  # maps OBJ face materials to FCE texpages (expects 0|1)
+            "material2triagflag" : 1,  # maps OBJ face materials to FCE triangles flag (expects 0|1)
+            "normals2vertices"   :  self.fce_normals2vertices,  #  (expects 0|1)
         }
         workload_Obj2Fce(path_obj, path, CONFIG)
         print(f"FCE export of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
@@ -1499,8 +1517,9 @@ class FcecodecExport(Operator, ExportHelper):
         print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
 
         # cleanup
-        path_obj.unlink()
-        path_mtl.unlink()
+        if not self.addon_dev_mode:
+            path_obj.unlink()
+            path_mtl.unlink()
 
         return {"FINISHED"}
 
