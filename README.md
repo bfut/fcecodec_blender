@@ -22,4 +22,4 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 __License:__ GNU General Public License v3.0+<br/>
 __Website:__ <https://github.com/bfut/fcecodec_blender>
 
-based on [fcecodec](https://github.com/bfut/fcecodec) and [fcecodec](https://github.com/bfut/unvivtool)
+based on [fcecodec](https://github.com/bfut/fcecodec) and [unvivtool](https://github.com/bfut/unvivtool)
