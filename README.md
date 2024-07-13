@@ -11,9 +11,10 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 
 ## Usage
  * File > Import > Need For Speed (.fce)
-    - load selected FCE file(s) and optional TGA texture file(s)
-    - alternatively, load FCE file(s) from selected VIV archive
-    - otherwise self-explaining Blender import dialog
+    - load selected (.fce) file(s) and optional (.tga) texture file(s)
+    - alternatively, select VIV archive
+        1. push "Select from (.viv)" button
+        2. Select (.fce) file and optional (.tga) from the lists
 
 * File > Export > Need For Speed (.fce)
     - self-explaining Blender export dialog
@@ -22,4 +23,4 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 __License:__ GNU General Public License v3.0+<br/>
 __Website:__ <https://github.com/bfut/fcecodec_blender>
 
-based on [fcecodec](https://github.com/bfut/fcecodec) and [unvivtool](https://github.com/bfut/unvivtool)
+powered by [fcecodec](https://github.com/bfut/fcecodec) and [unvivtool](https://github.com/bfut/unvivtool)
