@@ -11,8 +11,8 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 
 ## Usage
  * File > Import > Need For Speed (.fce)
-    - load selected (.fce) file(s) and optional (.tga) texture file(s)
-    - alternatively, select VIV archive
+    - load selected (.fce) file and optional (.tga) texture file
+    - alternatively, select (.viv) archive
         1. push "Select from (.viv)" button
         2. Select (.fce) file and optional (.tga) from the lists
 

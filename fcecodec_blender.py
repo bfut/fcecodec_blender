@@ -23,8 +23,8 @@ INSTALLATION:
 
 USAGE:
     * File > Import > Need For Speed (.fce)
-        - load selected (.fce) file(s) and optional (.tga) texture file(s)
-        - alternatively, select VIV archive
+        - load selected (.fce) file and optional (.tga) texture file
+        - alternatively, select (.viv) archive
             1. push "Select from (.viv)" button
             2. Select (.fce) file and optional (.tga) from the lists
 
@@ -35,7 +35,7 @@ USAGE:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 0),
+    "version": (3, 1),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
