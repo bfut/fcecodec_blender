@@ -34,7 +34,7 @@ USAGE:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (2, 0),
+    "version": (2, 1),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -1089,15 +1089,15 @@ def unvivtool_integration(path, verbose=False):
         'validity_bitmap': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
         """
         if vd.get("format", None) != "BIGF":
-            return False
+            return False, None, None
         files = np.array(vd.get("files", []))
         if len(files) < 1:
-            return False
+            return False, None, None
         validity_bitmap = np.array(vd.get("validity_bitmap", []))
         fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
         fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
         if len(fce_idx) < 1:
-            return False
+            return False, None, None
         tga_idx = np.where([f.lower().endswith(".tga") for f in files])[0]
         tga_idx = tga_idx[validity_bitmap[tga_idx] == 1]  # only valid files
         return True, fce_idx, tga_idx
@@ -1316,11 +1316,12 @@ class FcecodecImport(Operator, ImportHelper):
                     # ptn = time.process_time_ns()
                     # vd = dict(uvt.get_info(fp))
                     # print(f"Decoding '{fp.name}' with unvivtool {uvt.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
-                    ret, temp_fce_files, temp_tga_files, vd, fce_idx, tga_idx = unvivtool_integration(fp)
+                    ret, _, _, vd, fce_idx, tga_idx = unvivtool_integration(fp)
                     if not ret:
                         continue
-                    if len(temp_fce_files) > 0:
+                    if len(fce_idx) > 0:
                         vivpath = fp
+                        break
 
             for f in self.files:
                 fp = pathlib.Path(f.name)
@@ -1339,10 +1340,6 @@ class FcecodecImport(Operator, ImportHelper):
 
         #if VIV selected in import dialog, import all valid FCE files
         if vivpath and vd:
-            for fce_ in temp_fce_files:
-                print(f"path: {fce_}")
-                # uvt.unviv(vivpath, fce_, tdir)
-
             files = np.array(vd.get("files", []))
             fce_idx = np.array(fce_idx)
             tga_idx = np.array(tga_idx)
@@ -1463,7 +1460,8 @@ class FcecodecImport(Operator, ImportHelper):
         # end loop
 
         if not self.addon_dev_mode:
-            for f in np.concatenate((temp_fce_files, temp_tga_files)):
+            # for f in np.concatenate((temp_fce_files, temp_tga_files)):
+            for f in temp_fce_files:  # tga files are needed on disk!
                 f = pathlib.Path(f).unlink()
 
         return {"FINISHED"}
