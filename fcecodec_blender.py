@@ -35,7 +35,7 @@ USAGE:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 1),
+    "version": (3, 2),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -81,7 +81,7 @@ try:
         raise ImportError
 except ImportError:
     pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
-    import unvivtool as fc
+    import unvivtool as uvt
 
 try:
     import numpy as np
