@@ -27,15 +27,31 @@ USAGE:
         - alternatively, select (.viv) archive
             1. push "Select from (.viv)" button
             2. Select (.fce) file and optional (.tga) from the lists
+            3. Hit "Import FCE" button
 
     * File > Export > Need For Speed (.fce)
-        - self-explaining Blender export dialog
+        - export as (.fce) file
+        - alternatively, select (.viv) archive
+            1. push "Select from (.viv)" button
+            2. Select (.fce) file from the list
+            3. Hit "Export FCE" button
+
+TUTORIAL:
+    The following tutorial shows how to use Blender to:
+        * create/modify damage models
+        * set part centers
+        * set vertice animation flags
+        * edit dummies (light / fx objects)
+        * edit triangle flags
+        * edit texture pages
+        
+    https://github.com/bfut/fcecodec/tree/main/scripts/doc_Obj2Fce.md
 """
 
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 2),
+    "version": (3, 3),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -74,7 +90,7 @@ except ImportError:
     pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
     import fcecodec as fc
 
-min_unvivtool_version = "2.2"
+min_unvivtool_version = "3.0"
 try:
     import unvivtool as uvt
     if uvt.__version__ < min_fcecodec_version:
@@ -1086,28 +1102,28 @@ def unvivtool_integration(path):
         'validity_bitmap': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
         """
         if vd.get("format", None) != "BIGF":
-            return False, None, None
+            return False, None, None, False
         files = np.array(vd.get("files", []))
         if len(files) < 1:
-            return False, None, None
+            return False, None, None, False
         validity_bitmap = np.array(vd.get("validity_bitmap", []))
         fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
         fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
         if len(fce_idx) < 1:
-            return False, None, None
+            return False, None, None, True
         tga_idx = np.where([f.lower().endswith(".tga") for f in files])[0]
         tga_idx = tga_idx[validity_bitmap[tga_idx] == 1]  # only valid files
-        return True, fce_idx, tga_idx
+        return True, fce_idx, tga_idx, True
 
-    ret, fce_idx, tga_idx = get_fce_tga_list_from_viv(vd)
+    ret, fce_idx, tga_idx, valid = get_fce_tga_list_from_viv(vd)
     if not ret:
-        return False, None, None, None, None, None
+        return False, None, None, None, None, None, valid
     files = np.array(vd.get("files", []))
     # files_offsets = np.array(vd.get("files_offsets", []))
     # files_sizes = np.array(vd.get("files_sizes", []))
     # validity_bitmap = np.array(vd.get("validity_bitmap", []))
 
-    return True, files[fce_idx], files[tga_idx], vd, fce_idx, tga_idx
+    return True, files[fce_idx], files[tga_idx], vd, fce_idx, tga_idx, valid
 
 #########################################################
 
@@ -1126,7 +1142,7 @@ class FCEC_OT_UpdateUIList(Operator):
     filepath: StringProperty(default="")
 
     def decode(self, context, fp: pathlib.Path):
-        ret, fce_files, tga_files, _, _, _ = unvivtool_integration(fp)
+        ret, fce_files, tga_files, _, _, _, _ = unvivtool_integration(fp)
         if not ret:
             return
         valid_files = np.concatenate((fce_files, tga_files))
@@ -1140,12 +1156,72 @@ class FCEC_OT_UpdateUIList(Operator):
             fce_files = context.scene.fce_files
             item = fce_files.add()
             item.name = val
-            # item.vivpath = pathlib.Path(self.filepath)
             item.vivpath = self.filepath
         elif ext.lower() == ".tga":
             tga_files = context.scene.tga_files
             item = tga_files.add()
             item.name = val
+            item.vivpath = self.filepath
+        else:
+            print(f"Unknown file extension '{ext}'")
+
+    def execute(self, context):
+        context.scene.fce_files.clear()  # reset list
+        context.scene.tga_files.clear()  # reset list
+        fp = pathlib.Path(self.filepath)
+        if fp.suffix.lower() == ".viv":
+            print(f"Decoding archive... '{fp}'")
+            self.decode(context, fp)
+            self.filepath = ""  # avoid decoder loop
+        return {'FINISHED'}
+
+class FCEC_OT_UpdateUIListExport(Operator):
+    """Update fce and tga UI lists."""
+    bl_idname = "viv_files_export.update"
+    bl_label = "Update fce and tga lists"
+
+    filepath: StringProperty(default="")
+
+    def decode(self, context, fp: pathlib.Path):
+        ret, fce_files, tga_files, _, _, _, valid = unvivtool_integration(fp)
+        if not ret and not valid:
+            return
+        elif ret:
+            valid_files = np.concatenate((fce_files, tga_files))
+            print(f"valid_files: {valid_files}")
+            for v in valid_files:
+                self.add_value(context, v)
+        if valid:
+            self.add_message(context, "foobar.fce", "<add file>")
+            self.add_message(context, "foobar.tga", "<add file>")
+
+    def add_value(self, context, val: str):
+        ext = pathlib.Path(val).suffix
+        if ext.lower() == ".fce":
+            fce_files = context.scene.fce_files
+            item = fce_files.add()
+            item.name = val
+            item.vivpath = self.filepath
+        elif ext.lower() == ".tga":
+            tga_files = context.scene.tga_files
+            item = tga_files.add()
+            item.name = val
+            item.vivpath = self.filepath
+        else:
+            print(f"Unknown file extension '{ext}'")
+
+    def add_message(self, context, val: str, msg: str):
+        ext = pathlib.Path(val).suffix
+        if ext.lower() == ".fce":
+            fce_files = context.scene.fce_files
+            item = fce_files.add()
+            item.name = msg
+            # item.vivpath = pathlib.Path(self.filepath)
+            item.vivpath = self.filepath
+        elif ext.lower() == ".tga":
+            tga_files = context.scene.tga_files
+            item = tga_files.add()
+            item.name = msg
             item.vivpath = self.filepath
         else:
             print(f"Unknown file extension '{ext}'")
@@ -1276,9 +1352,7 @@ class FcecodecImport(Operator, ImportHelper):
                     break
                 else:
                     self.current_num_fce_files = 0
-
         sce = context.scene
-
         row = layout.row()
         if pathlib.Path(self.current_viv_archive).suffix.lower() == ".viv":
             row.operator("viv_files.update", text="Select from (.viv)").filepath = self.current_viv_archive
@@ -1317,7 +1391,7 @@ class FcecodecImport(Operator, ImportHelper):
                 fp = pathlib.Path(f.name)
                 if fp.suffix.lower() == ".viv":
                     fp = pdir / fp
-                    ret, _, _, vd, fce_idx, _ = unvivtool_integration(fp)
+                    ret, _, _, vd, fce_idx, _, valid = unvivtool_integration(fp)
                     if not ret:
                         continue
                     if len(fce_idx) > 0:
@@ -1461,8 +1535,6 @@ class FcecodecImport(Operator, ImportHelper):
 
         # cleanup
         if not self.addon_dev_mode:
-            # path_obj.unlink()
-            # path_mtl.unlink()
             for f in tempfiles:
                     f = pathlib.Path(f).unlink()
 
@@ -1476,12 +1548,17 @@ class FcecodecExport(Operator, ExportHelper):
 
     filename_ext = ""
 
-    filter_glob: StringProperty(default="*.fce", options={"HIDDEN"})
+    filter_glob: StringProperty(default="*.fce;*.viv", options={"HIDDEN"})
 
     addon_dev_mode: BoolProperty(
         name="Developer Mode",
         description="Keep temp files",
         default=False
+    )
+
+    files: CollectionProperty(
+        name="File Path",
+        type=bpy.types.OperatorFileListElement,
     )
 
     export_selected_objects: BoolProperty(
@@ -1584,6 +1661,10 @@ class FcecodecExport(Operator, ExportHelper):
         default=False
     )
 
+    tga_path: StringProperty(
+        subtype="FILE_PATH"
+    )
+
 
     # draws export dialog
     def draw(self, context):
@@ -1618,24 +1699,100 @@ class FcecodecExport(Operator, ExportHelper):
         box = layout.box()
         box.prop(self, "fce_normals2vertices")
 
+        # if VIV selected in import dialog, display contents of first VIV file
+        if self.files:
+            for f in self.files:
+                fp = pathlib.Path(f.name)
+                if fp.suffix.lower() == ".viv":
+                    pdir = pathlib.Path(self.filepath).parent
+                    fp = pdir / fp
+                    if not fp.is_file() or self.current_viv_archive == fp:   # avoid decoder loop
+                        break
+                    self.current_viv_archive = str(fp)
+                    break
+                else:
+                    self.current_num_fce_files = 0
+        sce = context.scene
+        row = layout.row()
+        if pathlib.Path(self.current_viv_archive).suffix.lower() == ".viv":
+            row.operator("viv_files.update", text="Select in (.viv)").filepath = self.current_viv_archive
+            # row.operator("viv_files_export.update", text="Select in (.viv)").filepath = self.current_viv_archive
+            self.current_viv_archive = ""  # avoid decoder loop
+        layout.template_list("FCEC_UL_stringlist", "", sce, "fce_files", sce, "active_fce_files_index")
+        # layout.template_list("FCEC_UL_stringlist", "", sce, "tga_files", sce, "active_tga_files_index")
+
         if DEV_MODE:
             layout.prop(self, "addon_dev_mode")
 
+    current_viv_archive = ""  # avoid decoder loop
 
     def execute(self, context):
-        path = pathlib.Path(self.filepath)
-        if path.suffix.lower() != ".fce":
-            path = path.with_suffix(".fce")
-
-        # paths to temporary files
         time_suffix = str(time.time())
         tdir = pathlib.Path(tempfile.gettempdir())
+        pdir = pathlib.Path(self.filepath).parent
+
+        vivpath = None
+        path = None
+        texname = ""
+        tempfiles = []  # will be unlinked
+        if self.files:
+            # if VIV selected in dialog
+            for f in self.files:
+                fp = pathlib.Path(f.name)
+                if fp.suffix.lower() == ".viv":
+                    fp = pdir / fp
+                    ret, _, _, vd, fce_idx, _, valid = unvivtool_integration(fp)
+                    if not ret:
+                        continue
+                    if len(fce_idx) > 0:
+                        path = fp.with_suffix(".fce")
+                        vivpath = fp
+                        break
+
+            # if at least 1 FCE selected in dialog
+            for f in self.files:
+                fp = pathlib.Path(f.name)
+                if fp.suffix.lower() == ".fce":
+                    path = pdir / fp
+                    vivpath = None  # fce takes precedence
+                    break
+
+            # if no file selected in dialog
+            if not path and not vivpath:
+                path = pathlib.Path(self.filepath)
+                path = path.with_suffix(".fce")
+
+        print(f"path: {path}")
+        print(f"texname: {texname}")
+        print(f"vivpath: {vivpath}")
+
+
+        # if vivpath is not None: copy VIV archive to temp dir, create temp FCE, modify VIV archive in temp dir, move VIV to destination path, unlink temp FCE
+        # else: create temp FCE, move to actual path
+
+
+        path_actual = None
+        if vivpath is None: path_actual = str(path)
+
+        # paths to temporary files
+        path = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".fce")
+        path = tdir / path
         path_obj = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".obj")
         path_mtl = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".mtl")
         path_obj = pathlib.Path(str(path_obj).replace(" ", "_"))
         path_mtl = pathlib.Path(str(path_mtl).replace(" ", "_"))
         path_obj = tdir / path_obj
         path_mtl = tdir / path_mtl
+
+        tempfiles.append(path_obj)
+        tempfiles.append(path_mtl)
+        if vivpath: tempfiles.append(path)
+
+        print(f"path_actual: {path_actual}")
+        print(f"path: {path}")
+        print(f"texname: {texname}")
+        print(f"vivpath: {vivpath}")
+
 
         # https://docs.blender.org/api/current/bpy.ops.wm.html#bpy.ops.wm.obj_export
         bpy.ops.wm.obj_export(filepath=str(path_obj),
@@ -1756,10 +1913,51 @@ class FcecodecExport(Operator, ExportHelper):
         PrintFceInfo(path)
         print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
 
+
+        # if VIV selected in export dialog, updated selected VIV with exported FCE
+        if vivpath:
+            def update_viv(vivpath: pathlib.Path, fce_path):
+                # check that active files from UILists are valid in selected VIV archive
+                sce = context.scene
+                if len(sce.fce_files) < 1:
+                    print("Warning: No FCE file selected from VIV archive")
+                    return None, None, tempfiles
+
+                files = np.array(vd.get("files", []))
+                print(f"files: {files}")
+                active_fce = sce.fce_files[sce.active_fce_files_index].name
+                print(f"active_fce: {active_fce}")
+                active_fce_idx = np.where(files == active_fce)
+                if len(active_fce_idx) < 1 or len(active_fce_idx[0]) < 1:
+                    print("Warning: Selected FCE file not found in selected VIV archive")
+                    return None, None, tempfiles
+                active_fce_idx = int(active_fce_idx[0][0])
+
+                print(f"active_fce_idx: {active_fce_idx}")
+
+                # update active FCE in selected VIV archive
+                ptn = time.process_time_ns()
+                uvt.update(vivpath, fce_path, active_fce_idx+1, replace_filename=False, verbose=True)
+                ptn = float(time.process_time_ns() - ptn) / 1e6
+                print(f"Updating '{vivpath.name}' took {ptn:.2f} ms")
+
+                viv = None
+                viv = dict(uvt.get_info(vivpath))
+                print(viv)
+
+            print(f"Updating archive {vivpath}")
+            update_viv(vivpath, path)
+
+
+        # move temp file to destination
+        if vivpath is None:
+            if path_actual.is_file(): path_actual.unlink()
+            path = path.rename(path_actual)
+
         # cleanup
         if not self.addon_dev_mode:
-            path_obj.unlink()
-            path_mtl.unlink()
+            for f in tempfiles:
+                f = pathlib.Path(f).unlink()
 
         return {"FINISHED"}
 
@@ -1775,6 +1973,7 @@ classes = (
     FcecodecExport,
     FCEC_UL_stringlist,
     FCEC_OT_UpdateUIList,
+    FCEC_OT_UpdateUIListExport,
     VivItem,
 )
 
@@ -1783,8 +1982,6 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
-    # bpy.types.Scene.viv_files = CollectionProperty(type=VivItem)  # deprecated
-    # bpy.types.Scene.active_viv_files_index = IntProperty(name="active_viv_files_index")  # deprecated
     bpy.types.Scene.fce_files = CollectionProperty(type=VivItem)
     bpy.types.Scene.active_fce_files_index = IntProperty(name="active_fce_files_index")
     bpy.types.Scene.tga_files = CollectionProperty(type=VivItem)

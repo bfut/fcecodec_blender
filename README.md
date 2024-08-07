@@ -15,9 +15,26 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
     - alternatively, select (.viv) archive
         1. push "Select from (.viv)" button
         2. Select (.fce) file and optional (.tga) from the lists
+        3. Hit "Import FCE" button
 
 * File > Export > Need For Speed (.fce)
-    - self-explaining Blender export dialog
+    - export as (.fce) file
+    - alternatively, select (.viv) archive
+        1. push "Select from (.viv)" button
+        2. Select (.fce) file from the list
+        3. Hit "Export FCE" button
+
+## Tutorial
+
+The following tutorial shows how to use Blender to:
+* create/modify damage models
+* set part centers
+* set vertice animation flags
+* edit dummies (light / fx objects)
+* edit triangle flags
+* edit texture pages
+
+[Tutorial](https://github.com/bfut/fcecodec/tree/main/scripts/doc_Obj2Fce.md)
 
 ## Information
 __License:__ GNU General Public License v3.0+<br/>
