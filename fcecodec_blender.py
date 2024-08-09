@@ -25,33 +25,33 @@ USAGE:
     * File > Import > Need For Speed (.fce)
         - load selected (.fce) file and optional (.tga) texture file
         - alternatively, select (.viv) archive
-            1. push "Select from (.viv)" button
+            1. Hit "Select from (.viv)" button
             2. Select (.fce) file and optional (.tga) from the lists
             3. Hit "Import FCE" button
 
     * File > Export > Need For Speed (.fce)
         - export as (.fce) file
         - alternatively, select (.viv) archive
-            1. push "Select from (.viv)" button
+            1. Hit "Select from (.viv)" button
             2. Select (.fce) file from the list
             3. Hit "Export FCE" button
 
 TUTORIAL:
-    The following tutorial shows how to use Blender to:
+    The following tutorial describes how to use Blender to:
         * create/modify damage models
-        * set part centers
+        * edit part centers
         * set vertice animation flags
         * edit dummies (light / fx objects)
         * edit triangle flags
         * edit texture pages
-        
+
     https://github.com/bfut/fcecodec/tree/main/scripts/doc_Obj2Fce.md
 """
 
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 3),
+    "version": (3, 4),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
