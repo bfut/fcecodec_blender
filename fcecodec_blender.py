@@ -32,7 +32,7 @@ USAGE:
     * File > Export > Need For Speed (.fce)
         - export as (.fce) file
         - alternatively, select (.viv) archive
-            1. Hit "Select from (.viv)" button
+            1. Hit "Select in (.viv)" button
             2. Select (.fce) file from the list
             3. Hit "Export FCE" button
 
@@ -51,7 +51,7 @@ TUTORIAL:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 4),
+    "version": (3, 5),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -81,7 +81,7 @@ def pip_install(package, upgrade=False, pre=False, version: str | None = None):
         _call.append(package)
     subprocess.check_call(_call)
 
-min_fcecodec_version = "1.7"
+min_fcecodec_version = "1.11"
 try:
     import fcecodec as fc
     if fc.__version__ < min_fcecodec_version:

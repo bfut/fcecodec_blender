@@ -20,7 +20,7 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 * File > Export > Need For Speed (.fce)
     - export as (.fce) file
     - alternatively, select (.viv) archive
-        1. Hit "Select from (.viv)" button
+        1. Hit "Select in (.viv)" button
         2. Select (.fce) file from the list
         3. Hit "Export FCE" button
 
