@@ -18,8 +18,10 @@ fcecodec_blender.py - Blender (.fce) Import/Export Add-on
 Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 
 INSTALLATION:
-    * Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
+    1. Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
         - requires an active internet connection while Blender installs Python modules "fcecodec" and "tinyobjloader" and "unvivtool"
+    2. make sure fcecodec_blender is enabled in the Add-ons tab
+    3. if fcecodec_blender was previously installed, make sure to restart Blender
 
 USAGE:
     * File > Import > Need For Speed (.fce)
@@ -51,7 +53,7 @@ TUTORIAL:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 5),
+    "version": (3, 12),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -79,22 +81,23 @@ def pip_install(package, upgrade=False, pre=False, version: str | None = None):
         _call.append(f"{package}>={version}")
     else:
         _call.append(package)
-    subprocess.check_call(_call)
+    retv = subprocess.check_call(_call)
+    print(retv)
 
 min_fcecodec_version = "1.11"
 try:
     import fcecodec as fc
     if fc.__version__ < min_fcecodec_version:
-        raise ImportError
+        pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
 except ImportError:
     pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
     import fcecodec as fc
 
-min_unvivtool_version = "3.0"
+min_unvivtool_version = "3.4"
 try:
     import unvivtool as uvt
     if uvt.__version__ < min_fcecodec_version:
-        raise ImportError
+        pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
 except ImportError:
     pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
     import unvivtool as uvt
@@ -1082,7 +1085,7 @@ def unvivtool_integration(path):
     path = pathlib.Path(path)
     ptn = time.process_time_ns()
     vd = dict(uvt.get_info(path))
-    print(f"Decoding '{path.name}' with unvivtool {uvt.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+    print(f"Decoding '{path.name}' with unvivtool {uvt.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
     def get_fce_tga_list_from_viv(vd: dict):
         """
         Get indexes of valid files with .tga or .fce extension from BIGF viv archive.
@@ -1106,9 +1109,16 @@ def unvivtool_integration(path):
         files = np.array(vd.get("files", []))
         if len(files) < 1:
             return False, None, None, False
-        validity_bitmap = np.array(vd.get("validity_bitmap", []))
-        fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
-        fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
+        try:
+            validity_bitmap = np.array(vd.get("validity_bitmap", []))
+            fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
+            fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
+        except IndexError:
+            pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
+            import unvivtool as uvt
+            validity_bitmap = np.array(vd.get("validity_bitmap", []))
+            fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
+            fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
         if len(fce_idx) < 1:
             return False, None, None, True
         tga_idx = np.where([f.lower().endswith(".tga") for f in files])[0]
@@ -1504,7 +1514,7 @@ class FcecodecImport(Operator, ImportHelper):
         ptn = time.process_time_ns()
         mesh = fc.Mesh()
         mesh = LoadFce(mesh, path)
-        print(f"FCE import of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+        print(f"FCE import of '{path.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
 
 
         # Apply options to mesh
@@ -1517,7 +1527,7 @@ class FcecodecImport(Operator, ImportHelper):
         if self.fce_restrict_texpage:
             mesh = FilterTexpageTriags(mesh, select_texpages=self.fce_select_texpage)
         mesh = DeleteEmptyParts(mesh)
-        print(f"Applying options to '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+        print(f"Applying options to '{path.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
 
 
         # Export mesh to temporary OBJ
@@ -1525,7 +1535,7 @@ class FcecodecImport(Operator, ImportHelper):
         # mesh.PrintInfo()
         ExportObj(mesh, path_obj, path_mtl, texname, self.print_damage, self.print_dummies, self.use_part_positions, self.print_part_positions,
                 filter_triagflags_0xfff=self.fce_filter_triagflags_0xfff)
-        print(f"OBJ export to '{path_obj.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+        print(f"OBJ export to '{path_obj.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
 
 
         # Import temporary OBJ to Blender
@@ -1819,7 +1829,7 @@ class FcecodecExport(Operator, ExportHelper):
             "normals2vertices"   :  self.fce_normals2vertices,  #  (expects 0|1)
         }
         workload_Obj2Fce(path_obj, path, CONFIG)
-        print(f"FCE export of '{path.name}' took {(float(time.process_time_ns() - ptn) / 1e6):.2f} ms")
+        print(f"FCE export of '{path.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
 
 
         print(f"Apply options to {path}")
@@ -1911,7 +1921,7 @@ class FcecodecExport(Operator, ExportHelper):
 
         ptn = float(time.process_time_ns() - ptn) / 1e6
         PrintFceInfo(path)
-        print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
+        print(f"Applying options to '{path.name}' took {ptn:.4f} ms")
 
 
         # if VIV selected in export dialog, updated selected VIV with exported FCE
@@ -1939,7 +1949,7 @@ class FcecodecExport(Operator, ExportHelper):
                 ptn = time.process_time_ns()
                 uvt.update(vivpath, fce_path, active_fce_idx+1, replace_filename=False, verbose=True)
                 ptn = float(time.process_time_ns() - ptn) / 1e6
-                print(f"Updating '{vivpath.name}' took {ptn:.2f} ms")
+                print(f"Updating '{vivpath.name}' with unvivtool {uvt.__version__} took {ptn:.4f} ms")
 
                 viv = None
                 viv = dict(uvt.get_info(vivpath))
