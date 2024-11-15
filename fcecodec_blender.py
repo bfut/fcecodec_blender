@@ -20,8 +20,8 @@ Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 INSTALLATION:
     1. Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
         - requires an active internet connection while Blender installs Python modules "fcecodec" and "tinyobjloader" and "unvivtool"
-    2. make sure fcecodec_blender is enabled in the Add-ons tab
-    3. if fcecodec_blender was previously installed, make sure to restart Blender
+    2. fcecodec_blender must be enabled in the Add-ons tab
+    3. if fcecodec_blender was previously installed, be sure to restart Blender
 
 USAGE:
     * File > Import > Need For Speed (.fce)
@@ -53,7 +53,7 @@ TUTORIAL:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 12),
+    "version": (3, 16),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -84,7 +84,7 @@ def pip_install(package, upgrade=False, pre=False, version: str | None = None):
     retv = subprocess.check_call(_call)
     print(retv)
 
-min_fcecodec_version = "1.11"
+min_fcecodec_version = "1.14"
 try:
     import fcecodec as fc
     if fc.__version__ < min_fcecodec_version:
@@ -92,27 +92,29 @@ try:
 except ImportError:
     pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
     import fcecodec as fc
+del min_fcecodec_version
 
-min_unvivtool_version = "3.4"
+min_unvivtool_version = "3.5"
 try:
     import unvivtool as uvt
-    if uvt.__version__ < min_fcecodec_version:
+    if uvt.__version__ < min_unvivtool_version:
         pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
 except ImportError:
     pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
     import unvivtool as uvt
-
-try:
-    import numpy as np
-except ImportError:
-    pip_install("numpy")
-    import numpy as np
+del min_unvivtool_version
 
 try:
     import tinyobjloader
 except ImportError:
     pip_install("tinyobjloader", upgrade=True, pre=True)
     import tinyobjloader
+
+try:
+    import numpy as np
+except ImportError:
+    pip_install("numpy")
+    import numpy as np
 
 import bpy
 from bpy.props import (StringProperty,
@@ -1083,9 +1085,9 @@ def HeuristicTgaSearch(path, suffix=".tga"):
 
 def unvivtool_integration(path):
     path = pathlib.Path(path)
-    ptn = time.process_time_ns()
+    ptn = time.perf_counter_ns()
     vd = dict(uvt.get_info(path))
-    print(f"Decoding '{path.name}' with unvivtool {uvt.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
+    print(f"Decoding '{path.name}' with unvivtool {uvt.__version__} took {(float(time.perf_counter_ns() - ptn) / 1e6):.2f} ms")
     def get_fce_tga_list_from_viv(vd: dict):
         """
         Get indexes of valid files with .tga or .fce extension from BIGF viv archive.
@@ -1102,7 +1104,7 @@ def unvivtool_integration(path):
         'files_sizes': [5028, 147908, 262188, 646, 611, 459, 711, 131112, 673, 691, 697, 226236, 65588, 65580, 130072, 575300],
         'files_fn_lens': [8, 7, 9, 10, 10, 10, 10, 10, 10, 10, 10, 7, 9, 8, 8, 8],
         'files_fn_ofs': [24, 41, 57, 75, 94, 113, 132, 151, 170, 189, 208, 227, 243, 261, 278, 295],
-        'validity_bitmap': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
+        'bitmap': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
         """
         if vd.get("format", None) != "BIGF":
             return False, None, None, False
@@ -1110,13 +1112,13 @@ def unvivtool_integration(path):
         if len(files) < 1:
             return False, None, None, False
         try:
-            validity_bitmap = np.array(vd.get("validity_bitmap", []))
+            validity_bitmap = np.array(vd.get("bitmap", []))
             fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
             fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
         except IndexError:
             pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
             import unvivtool as uvt
-            validity_bitmap = np.array(vd.get("validity_bitmap", []))
+            validity_bitmap = np.array(vd.get("bitmap", []))
             fce_idx = np.where([f.lower().endswith(".fce") for f in files])[0]
             fce_idx = fce_idx[validity_bitmap[fce_idx] == 1]  # only valid files
         if len(fce_idx) < 1:
@@ -1131,7 +1133,7 @@ def unvivtool_integration(path):
     files = np.array(vd.get("files", []))
     # files_offsets = np.array(vd.get("files_offsets", []))
     # files_sizes = np.array(vd.get("files_sizes", []))
-    # validity_bitmap = np.array(vd.get("validity_bitmap", []))
+    # validity_bitmap = np.array(vd.get("bitmap", []))
 
     return True, files[fce_idx], files[tga_idx], vd, fce_idx, tga_idx, valid
 
@@ -1511,14 +1513,14 @@ class FcecodecImport(Operator, ImportHelper):
         PrintFceInfo(path)
 
         # Load FCE as mesh
-        ptn = time.process_time_ns()
+        ptn = time.perf_counter_ns()
         mesh = fc.Mesh()
         mesh = LoadFce(mesh, path)
-        print(f"FCE import of '{path.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
+        print(f"FCE import of '{path.name}' with fcecodec {fc.__version__} took {(float(time.perf_counter_ns() - ptn) / 1e6):.2f} ms")
 
 
         # Apply options to mesh
-        ptn = time.process_time_ns()
+        ptn = time.perf_counter_ns()
         if self.fce_convertFCE3partnames:
             buf = path.read_bytes()
             ver = fc.GetFceVersion(buf)
@@ -1527,15 +1529,15 @@ class FcecodecImport(Operator, ImportHelper):
         if self.fce_restrict_texpage:
             mesh = FilterTexpageTriags(mesh, select_texpages=self.fce_select_texpage)
         mesh = DeleteEmptyParts(mesh)
-        print(f"Applying options to '{path.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
+        print(f"Applying options to '{path.name}' with fcecodec {fc.__version__} took {(float(time.perf_counter_ns() - ptn) / 1e6):.2f} ms")
 
 
         # Export mesh to temporary OBJ
-        ptn = time.process_time_ns()
+        ptn = time.perf_counter_ns()
         # mesh.PrintInfo()
         ExportObj(mesh, path_obj, path_mtl, texname, self.print_damage, self.print_dummies, self.use_part_positions, self.print_part_positions,
                 filter_triagflags_0xfff=self.fce_filter_triagflags_0xfff)
-        print(f"OBJ export to '{path_obj.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
+        print(f"OBJ export to '{path_obj.name}' with fcecodec {fc.__version__} took {(float(time.perf_counter_ns() - ptn) / 1e6):.2f} ms")
 
 
         # Import temporary OBJ to Blender
@@ -1820,7 +1822,7 @@ class FcecodecExport(Operator, ExportHelper):
             return {"CANCELLED"}
 
         print(f"Writing to {path}")
-        ptn = time.process_time_ns()
+        ptn = time.perf_counter_ns()
         CONFIG = {
             "fce_version"        : self.fce_version,  # output format version; expects "keep" or "3"|"4"|"4M" for FCE3, FCE4, FCE4M, respectively
             "center_parts"       : True,  # localize part vertice positions to part centroid, setting part position (expects 0|1)
@@ -1829,11 +1831,11 @@ class FcecodecExport(Operator, ExportHelper):
             "normals2vertices"   :  self.fce_normals2vertices,  #  (expects 0|1)
         }
         workload_Obj2Fce(path_obj, path, CONFIG)
-        print(f"FCE export of '{path.name}' with fcecodec {fc.__version__} took {(float(time.process_time_ns() - ptn) / 1e6):.4f} ms")
+        print(f"FCE export of '{path.name}' with fcecodec {fc.__version__} took {(float(time.perf_counter_ns() - ptn) / 1e6):.2f} ms")
 
 
         print(f"Apply options to {path}")
-        ptn = time.process_time_ns()
+        ptn = time.perf_counter_ns()
 
         if self.fce_convertpartnames:
             if self.fce_version == "4M":
@@ -1919,9 +1921,9 @@ class FcecodecExport(Operator, ExportHelper):
             WriteFce(self.fce_version, mesh, path)
 
 
-        ptn = float(time.process_time_ns() - ptn) / 1e6
+        ptn = float(time.perf_counter_ns() - ptn) / 1e6
         PrintFceInfo(path)
-        print(f"Applying options to '{path.name}' took {ptn:.4f} ms")
+        print(f"Applying options to '{path.name}' took {ptn:.2f} ms")
 
 
         # if VIV selected in export dialog, updated selected VIV with exported FCE
@@ -1946,10 +1948,10 @@ class FcecodecExport(Operator, ExportHelper):
                 print(f"active_fce_idx: {active_fce_idx}")
 
                 # update active FCE in selected VIV archive
-                ptn = time.process_time_ns()
+                ptn = time.perf_counter_ns()
                 uvt.update(vivpath, fce_path, active_fce_idx+1, replace_filename=False, verbose=True)
-                ptn = float(time.process_time_ns() - ptn) / 1e6
-                print(f"Updating '{vivpath.name}' with unvivtool {uvt.__version__} took {ptn:.4f} ms")
+                ptn = float(time.perf_counter_ns() - ptn) / 1e6
+                print(f"Updating '{vivpath.name}' with unvivtool {uvt.__version__} took {ptn:.2f} ms")
 
                 viv = None
                 viv = dict(uvt.get_info(vivpath))
