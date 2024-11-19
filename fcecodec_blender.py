@@ -53,7 +53,7 @@ TUTORIAL:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 16),
+    "version": (3, 17),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -165,9 +165,13 @@ def HiBody_ReorderTriagsTransparentToLast(mesh, version):
 
 def GetFceVersion(path):
     with open(path, "rb") as f:
-        version = fc.GetFceVersion(f.read(0x2038))
+        version = fc.GetFceVersion(f.read())
         assert version > 0
         return version
+
+def GetFceVersionFromBuf(buf):
+    version = fc.GetFceVersion(buf)
+    return version
 
 def PrintFceInfo(path):
     with open(path, "rb") as f:
