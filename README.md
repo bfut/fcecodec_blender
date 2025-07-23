@@ -1,7 +1,7 @@
 # fcecodec_blender
 Full-featured Blender (.fce) Import/Export Add-on for Need For Speed 3 & High Stakes car models.
 
-Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
+Supports Blender 5.x, 4.x, 4.5 LTS, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 
 ## Installation
 1. Download fcecodec_blender.py
