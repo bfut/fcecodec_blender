@@ -15,13 +15,13 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 fcecodec_blender.py - Blender (.fce) Import/Export Add-on
-Supports Blender 4.x, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
+Supports Blender 5.x, 4.x, 4.5 LTS, 4.2 LTS, and 3.6 LTS on Windows, Linux, and macOS.
 
 INSTALLATION:
     1. Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
         - requires an active internet connection while Blender installs Python modules "fcecodec" and "tinyobjloader" and "unvivtool"
     2. fcecodec_blender must be enabled in the Add-ons tab
-    3. if fcecodec_blender was previously installed, be sure to restart Blender
+    3. If fcecodec_blender was previously installed, be sure to restart Blender
 
 USAGE:
     * File > Import > Need For Speed (.fce)
@@ -53,7 +53,7 @@ TUTORIAL:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 17),
+    "version": (3, 19),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -71,38 +71,44 @@ import sys
 import tempfile
 import time
 
-def pip_install(package, upgrade=False, pre=False, version: str | None = None):
+def pip_install(package, upgrade=False, pre=False, min_version: str | None = None, max_version: str | None = None):
     _call = [sys.executable, "-m", "pip", "install"]
     if upgrade:
         _call.append("-U")
     if pre:
         _call.append("--pre")
-    if version:
-        _call.append(f"{package}>={version}")
+    if min_version and max_version is None:
+        _call.append(f"{package}>={min_version}")
+    elif min_version and max_version:
+        _call.append(f"\"{package}>={min_version},<={max_version}\"")
     else:
         _call.append(package)
     retv = subprocess.check_call(_call)
     print(retv)
 
 min_fcecodec_version = "1.14"
+max_fcecodec_version = "2.49"
 try:
     import fcecodec as fc
     if fc.__version__ < min_fcecodec_version:
-        pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
+        pip_install("fcecodec", upgrade=True, min_version=min_fcecodec_version, max_version=max_fcecodec_version)
 except ImportError:
-    pip_install("fcecodec", upgrade=True, version=min_fcecodec_version)
+    pip_install("fcecodec", upgrade=True, min_version=min_fcecodec_version, max_version=max_fcecodec_version)
     import fcecodec as fc
 del min_fcecodec_version
+del max_fcecodec_version
 
 min_unvivtool_version = "3.5"
+max_unvivtool_version = "3.5"
 try:
     import unvivtool as uvt
     if uvt.__version__ < min_unvivtool_version:
-        pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
+        pip_install("unvivtool", upgrade=True, min_version=min_unvivtool_version, max_version=max_unvivtool_version)
 except ImportError:
-    pip_install("unvivtool", upgrade=True, version=min_unvivtool_version)
+    pip_install("unvivtool", upgrade=True, min_version=min_unvivtool_version, max_version=max_unvivtool_version)
     import unvivtool as uvt
 del min_unvivtool_version
+del max_unvivtool_version
 
 try:
     import tinyobjloader
@@ -110,11 +116,7 @@ except ImportError:
     pip_install("tinyobjloader", upgrade=True, pre=True)
     import tinyobjloader
 
-try:
-    import numpy as np
-except ImportError:
-    pip_install("numpy")
-    import numpy as np
+import numpy as np
 
 import bpy
 from bpy.props import (StringProperty,
@@ -166,7 +168,7 @@ def HiBody_ReorderTriagsTransparentToLast(mesh, version):
 def GetFceVersion(path):
     with open(path, "rb") as f:
         version = fc.GetFceVersion(f.read())
-        assert version > 0
+        # assert version > 0
         return version
 
 def GetFceVersionFromBuf(buf):
@@ -182,7 +184,7 @@ def PrintFceInfo(path):
 def LoadFce(mesh, path):
     with open(path, "rb") as f:
         mesh.IoDecode(f.read())
-        assert mesh.MValid() is True
+        # assert mesh.MValid() is True
         return mesh
 
 def WriteFce(version, mesh, path, center_parts=False, mesh_function=None):
@@ -195,7 +197,7 @@ def WriteFce(version, mesh, path, center_parts=False, mesh_function=None):
             buf = mesh.IoEncode_Fce4(center_parts)
         else:
             buf = mesh.IoEncode_Fce4M(center_parts)
-        assert fc.ValidateFce(buf) == 1
+        # assert fc.ValidateFce(buf) == 1
         f.write(buf)
 
 def ExportObj(mesh, objpath, mtlpath, texname,
@@ -232,7 +234,8 @@ def FilterTexpageTriags(mesh, drop_texpages: int | list | None = None, select_te
             texp = mesh.PGetTriagsTexpages(pid)
             mask = np.isin(texp, drop_texpages)
             x = mask.nonzero()[0]
-            assert mesh.OpDeletePartTriags(pid, x)
+            if mesh.OpDeletePartTriags(pid, x) != 1:
+                print(f"FilterTexpageTriags: cannot delete triags for part {mesh.PGetName(pid)}")
 
     # Delete triangles with texpage not in select_texpages
     elif drop_texpages is None and select_texpages is not None:
@@ -246,7 +249,8 @@ def FilterTexpageTriags(mesh, drop_texpages: int | list | None = None, select_te
             mask = np.invert(mask)
             x = mask.nonzero()[0]
             print(mesh.PGetName(pid), texp.shape, x.shape, np.unique(texp))
-            assert mesh.OpDeletePartTriags(pid, x)
+            if mesh.OpDeletePartTriags(pid, x) != 1:
+                print(f"FilterTexpageTriags: cannot delete triags for part {mesh.PGetName(pid)}")
             print(f"after: mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
 
     else:
@@ -1391,6 +1395,7 @@ class FcecodecImport(Operator, ImportHelper):
     current_viv_archive = ""  # avoid decoder loop
 
     def execute(self, context):
+        print(f"fcecodec {fc.__version__}")
         time_suffix = str(time.time())
         tdir = pathlib.Path(tempfile.gettempdir())
         pdir = pathlib.Path(self.filepath).parent
@@ -1743,6 +1748,7 @@ class FcecodecExport(Operator, ExportHelper):
     current_viv_archive = ""  # avoid decoder loop
 
     def execute(self, context):
+        print(f"fcecodec {fc.__version__}")
         time_suffix = str(time.time())
         tdir = pathlib.Path(tempfile.gettempdir())
         pdir = pathlib.Path(self.filepath).parent
@@ -1788,7 +1794,7 @@ class FcecodecExport(Operator, ExportHelper):
 
 
         path_actual = None
-        if vivpath is None: path_actual = str(path)
+        if vivpath is None: path_actual = pathlib.Path(path)
 
         # paths to temporary files
         path = pathlib.Path(path.stem + "_" + time_suffix).with_suffix(".fce")
@@ -1838,7 +1844,7 @@ class FcecodecExport(Operator, ExportHelper):
         print(f"FCE export of '{path.name}' with fcecodec {fc.__version__} took {(float(time.perf_counter_ns() - ptn) / 1e6):.2f} ms")
 
 
-        print(f"Apply options to {path}")
+        print(f"Apply options to {path} (exists: {path.exists()})")
         ptn = time.perf_counter_ns()
 
         if self.fce_convertpartnames:

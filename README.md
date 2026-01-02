@@ -9,7 +9,7 @@ Supports Blender 5.x, 4.x, 4.5 LTS, 4.2 LTS, and 3.6 LTS on Windows, Linux, and 
 1. Edit > Preferences > Add-ons > Install... > fcecodec_blender.py
    - requires an active internet connection while Blender installs Python modules "fcecodec" and "tinyobjloader" and "unvivtool"
 1. fcecodec_blender must be enabled in the Add-ons tab
-1. if fcecodec_blender was previously installed, be sure to restart Blender
+1. If fcecodec_blender was previously installed, be sure to restart Blender
 
 ## Usage
  * File > Import > Need For Speed (.fce)
