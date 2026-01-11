@@ -53,7 +53,7 @@ TUTORIAL:
 bl_info = {
     "name": "fcecodec_blender",
     "author": "Benjamin Futasz",
-    "version": (3, 19),
+    "version": (3, 21),
     "blender": (3, 6, 0),
     "location": "File > Import/Export > Need For Speed (.fce)",
     "description": "Imports & Exports Need For Speed (.fce) files, powered by fcecodec",
@@ -83,32 +83,34 @@ def pip_install(package, upgrade=False, pre=False, min_version: str | None = Non
         _call.append(f"\"{package}>={min_version},<={max_version}\"")
     else:
         _call.append(package)
-    retv = subprocess.check_call(_call)
-    print(retv)
+    FCEC_print("pip_install:", " ".join(_call))
+    subprocess.check_call(" ".join(_call), shell=False)
+
+def version_compatible(v: str, min_version: str, max_version: str) -> bool:
+    maj1, minor1 = v.split(".")
+    maj_min, minor_min = min_version.split(".")
+    maj_max, minor_max = max_version.split(".")
+    FCEC_print(f"version_compatible: {int(maj_min) >= int(maj1) <= int(maj_max) and int(minor_min) >= int(minor1) <= int(minor_max)}")
+    return int(maj_min) >= int(maj1) <= int(maj_max) and int(minor_min) >= int(minor1) <= int(minor_max)
+
+def try_loading_module(module_name: str, min_version: str, max_version: str):
+    try:
+        module = __import__(module_name)
+        if not version_compatible(module.__version__, min_version, max_version):
+            pip_install(module_name, upgrade=True, min_version=min_version, max_version=max_version)
+            module = __import__(module_name)
+    except ImportError:
+        pip_install(module_name, upgrade=True, min_version=min_version, max_version=max_version)
+        module = __import__(module_name)
+    return module
 
 min_fcecodec_version = "1.14"
 max_fcecodec_version = "2.49"
-try:
-    import fcecodec as fc
-    if fc.__version__ < min_fcecodec_version:
-        pip_install("fcecodec", upgrade=True, min_version=min_fcecodec_version, max_version=max_fcecodec_version)
-except ImportError:
-    pip_install("fcecodec", upgrade=True, min_version=min_fcecodec_version, max_version=max_fcecodec_version)
-    import fcecodec as fc
-del min_fcecodec_version
-del max_fcecodec_version
+fc = try_loading_module("fcecodec", min_fcecodec_version, max_fcecodec_version)
 
-min_unvivtool_version = "3.5"
-max_unvivtool_version = "3.5"
-try:
-    import unvivtool as uvt
-    if uvt.__version__ < min_unvivtool_version:
-        pip_install("unvivtool", upgrade=True, min_version=min_unvivtool_version, max_version=max_unvivtool_version)
-except ImportError:
-    pip_install("unvivtool", upgrade=True, min_version=min_unvivtool_version, max_version=max_unvivtool_version)
-    import unvivtool as uvt
-del min_unvivtool_version
-del max_unvivtool_version
+min_unvivtool_version = "3.12"
+max_unvivtool_version = "3.49"
+uvt = try_loading_module("unvivtool", min_unvivtool_version, max_unvivtool_version)
 
 try:
     import tinyobjloader
@@ -133,6 +135,12 @@ from bpy.types import (Operator,
                        UIList)
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 
+if DEV_MODE:
+    def FCEC_print(*args, **kwargs):
+        print(*args, **kwargs)
+else:
+    def FCEC_print(*args, **kwargs):
+        pass
 
 # wrappers
 def ReorderTriagsTransparentDetachedAndToLast(mesh, pid_opaq):
@@ -221,7 +229,7 @@ def GetPartGlobalOrderVidxs(mesh, pid):
     map_verts = mesh.MVertsGetMap_idx2order
     part_vidxs = mesh.PGetTriagsVidx(pid)
     for i in range(part_vidxs.shape[0]):
-        # print(part_vidxs[i], map_verts[part_vidxs[i]])
+        # FCEC_print(part_vidxs[i], map_verts[part_vidxs[i]])
         part_vidxs[i] = map_verts[part_vidxs[i]]
     return part_vidxs
 
@@ -239,19 +247,19 @@ def FilterTexpageTriags(mesh, drop_texpages: int | list | None = None, select_te
 
     # Delete triangles with texpage not in select_texpages
     elif drop_texpages is None and select_texpages is not None:
-        print(f"FilterTexpageTriags: select_texpages={select_texpages}")
+        FCEC_print(f"FilterTexpageTriags: select_texpages={select_texpages}")
         if not isinstance(select_texpages, list):
             select_texpages = [select_texpages]
         for pid in reversed(range(mesh.MNumParts)):
-            print(f"before mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
+            FCEC_print(f"before mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
             texp = mesh.PGetTriagsTexpages(pid)
             mask = np.isin(texp, select_texpages)
             mask = np.invert(mask)
             x = mask.nonzero()[0]
-            print(mesh.PGetName(pid), texp.shape, x.shape, np.unique(texp))
+            FCEC_print(mesh.PGetName(pid), texp.shape, x.shape, np.unique(texp))
             if mesh.OpDeletePartTriags(pid, x) != 1:
                 print(f"FilterTexpageTriags: cannot delete triags for part {mesh.PGetName(pid)}")
-            print(f"after: mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
+            FCEC_print(f"after: mesh.PNumTriags(pid)={mesh.PNumTriags(pid)}")
 
     else:
         raise ValueError("FilterTexpageTriags: call with either drop_texpages or select_texpages, not both")
@@ -289,33 +297,32 @@ def LoadObj(filename):
 def GetVerts(reader):  # xyzxyzxyz
     attrib = reader.GetAttrib()
     arr = attrib.numpy_vertices()
-    print(f"GetVerts: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
+    FCEC_print(f"GetVerts: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
     return arr
 
 def GetNormals(reader):  # xyzxyzxyz
     attrib = reader.GetAttrib()
     arr = np.array(attrib.normals)
     if arr.shape[0] == 0:
-        print(f"GetNormals: {type(arr)}, {arr.shape}, {arr.ndim} min,max=n/a;n/a")
+        FCEC_print(f"GetNormals: {type(arr)}, {arr.shape}, {arr.ndim} min,max=n/a;n/a")
     else:
-        print(f"GetNormals: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
+        FCEC_print(f"GetNormals: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
     return arr
 
 def GetTexcoords(reader):  # uvuvuv
     attrib = reader.GetAttrib()
     arr = np.array(attrib.texcoords)
     if arr.shape[0] == 0:
-        print(f"GetTexcoords: {type(arr)}, {arr.shape}, {arr.ndim} min,max=n/a;n/a")
+        FCEC_print(f"GetTexcoords: {type(arr)}, {arr.shape}, {arr.ndim} min,max=n/a;n/a")
     else:
-        print(f"GetTexcoords: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
+        FCEC_print(f"GetTexcoords: {type(arr)}, {arr.shape}, {arr.ndim} min,max={np.min(arr)};{np.max(arr)}")
     return arr
 
 def PrintShapes(reader):
     shapes = reader.GetShapes()
-    print("Num shapes: ", len(shapes))
+    FCEC_print("Num shapes: ", len(shapes))
     for shape in shapes:
-        print(shape.name,
-              f"faces={int(shape.mesh.numpy_indices().shape[0] / (3*3))}")
+        FCEC_print(shape.name, f"faces={int(shape.mesh.numpy_indices().shape[0] / (3*3))}")
 
 def GetShapeNames(reader):
     shapenames = []
@@ -340,9 +347,9 @@ def GetShapeFaces(reader, vertices, normals, texcoords, shapename):
     normals_idxs = shape.mesh.numpy_indices()[1::3]
     texcoord_idxs = shape.mesh.numpy_indices()[2::3]
 
-    print(shape.name, f"faces={int(s_faces.shape[0] / 3)}")
-    print(shape.name, f"normals_idxs={int(normals_idxs.shape[0])} min,max={np.min(normals_idxs)};{np.max(normals_idxs)}")
-    print(shape.name, f"texcoord_idxs={int(texcoord_idxs.shape[0])} min,max={np.min(texcoord_idxs)};{np.max(texcoord_idxs)}")
+    FCEC_print(shape.name, f"faces={int(s_faces.shape[0] / 3)}")
+    FCEC_print(shape.name, f"normals_idxs={int(normals_idxs.shape[0])} min,max={np.min(normals_idxs)};{np.max(normals_idxs)}")
+    FCEC_print(shape.name, f"texcoord_idxs={int(texcoord_idxs.shape[0])} min,max={np.min(texcoord_idxs)};{np.max(texcoord_idxs)}")
 
     # cannot use np.unique(), as shape may have unreferenced verts
     # example: mcf1/car.viv->car.fce :HB
@@ -351,31 +358,31 @@ def GetShapeFaces(reader, vertices, normals, texcoords, shapename):
 
     # Get normals (use vert positions, if no normals for shape)
     # obj: number of verts and normals may differ; fce: each vert has a normal
-    print("GetShapeFaces: Get normals")
+    FCEC_print("GetShapeFaces: Get normals")
     norm_selection = np.empty(vert_selection.shape[0], dtype=int)
     map_v_t = np.copy(vert_selection)
-    print(f"GetShapeFaces: for i in range{map_v_t.shape[0]}")
+    FCEC_print(f"GetShapeFaces: for i in range{map_v_t.shape[0]}")
     for i in range(map_v_t.shape[0]):
         argwhere = np.argwhere(s_faces == map_v_t[i])
         if len(argwhere) == 0:
             map_v_t[i] = -1
         else:
             map_v_t[i] = argwhere[0]
-    print(f"GetShapeFaces: for i in range{map_v_t.shape[0]}")
+    FCEC_print(f"GetShapeFaces: for i in range{map_v_t.shape[0]}")
     for i in range(map_v_t.shape[0]):
         if map_v_t[i] < 0:
             norm_selection[i] = np.copy(vert_selection[i])
         else:
             norm_selection[i] = np.copy(normals_idxs[map_v_t[i]])
     if np.amax(norm_selection) <= int(normals.shape[0] / 3):
-        print("norm_selection")
+        FCEC_print("norm_selection")
         s_norms = normals.reshape(-1, 3)[ norm_selection ].flatten()  # normals[normals_idxs]
     else:
-        print("shape has no normals... use vert positions as normals")
+        FCEC_print("shape has no normals... use vert positions as normals")
         s_norms = np.copy(s_verts)
 
     # Get tex coordinate (set 0.0f, if not enough texcoords)
-    print("GetShapeFaces: uvuvuv... -> uuuvvv...")
+    FCEC_print("GetShapeFaces: uvuvuv... -> uuuvvv...")
     s_texcs = np.zeros(s_NumFaces * 6, dtype=float)
     if texcoord_idxs.shape[0] == s_NumFaces * 3:
         for i in range(s_NumFaces):
@@ -441,13 +448,13 @@ def ShapeToPart(reader,
                 material2texpage, material2triagflag):
     s_faces, s_verts, s_norms, s_texcs, s_matls = GetShapeFaces(reader,
         objverts, objnorms, objtexcoords, request_shapename)
-    print(f"faces:{int(s_faces.shape[0] / 3)}")
-    print(f"vert idx range: [{np.amin(s_faces)},{np.amax(s_faces)}]")
-    print(f"vertices:{int(s_verts.shape[0] / 3)}")
-    print(f"normals:{s_norms.shape[0]}")
-    print(f"texcoords:{s_texcs.shape[0]}->{int(s_texcs.shape[0] / 6)}")
+    FCEC_print(f"faces:{int(s_faces.shape[0] / 3)}")
+    FCEC_print(f"vert idx range: [{np.amin(s_faces)},{np.amax(s_faces)}]")
+    FCEC_print(f"vertices:{int(s_verts.shape[0] / 3)}")
+    FCEC_print(f"normals:{s_norms.shape[0]}")
+    FCEC_print(f"texcoords:{s_texcs.shape[0]}->{int(s_texcs.shape[0] / 6)}")
 
-    # print(s_faces)
+    # FCEC_print(s_faces)
     s_faces = LocalizeVertIdxs(s_faces)
 
     s_verts[2::3] = -s_verts[2::3]  # flip sign in Z-coordinate
@@ -457,7 +464,7 @@ def ShapeToPart(reader,
 
     # map faces material IDs to triangles texpages
     if material2texpage == 1:
-        print("mapping faces material names to triangles texpages...")
+        FCEC_print("mapping faces material names to triangles texpages...")
         num_arts_warning = False
         materials = reader.GetMaterials()
         texps = mesh.PGetTriagsTexpages(mesh.MNumParts - 1)
@@ -467,14 +474,14 @@ def ShapeToPart(reader,
             mat_ = re.sub(r"\.(.*)", "", mat_)
             if mat_[:2] == "0x":
                 texps[i] = int(mat_, base=16)
-                # print(f"{mat_} -> {texps[i]} (0x{texps[i]:0x})")
+                # FCEC_print(f"{mat_} -> {texps[i]} (0x{texps[i]:0x})")
             else:
                 tags = mat_.split("_")
                 texps[i] = GetTexPageFromTags(tags)
-                # print(f"{mat_} -> {tags} -> {texps[i]} (0x{texps[i]:0x})")
+                # FCEC_print(f"{mat_} -> {tags} -> {texps[i]} (0x{texps[i]:0x})")
             if texps[i] > 0:
                 num_arts_warning = True
-        # print(type(texps), texps.dtype, texps.shape)
+        # FCEC_print(type(texps), texps.dtype, texps.shape)
         if num_arts_warning:
             print("Warning: texpage greater than zero is present. FCE3/FCE4 require amending Mesh.NumArts value")
         mesh.PSetTriagsTexpages(mesh.MNumParts - 1, texps)
@@ -482,7 +489,7 @@ def ShapeToPart(reader,
     # map faces material names to triangles flags iff
     # all material names are integer hex values (strings of the form '0xiii')
     if material2triagflag == 1:
-        print("mapping faces material names to triangles flags...")
+        FCEC_print("mapping faces material names to triangles flags...")
         materials = reader.GetMaterials()
         tflags = mesh.PGetTriagsFlags(mesh.MNumParts - 1)
 
@@ -494,11 +501,11 @@ def ShapeToPart(reader,
             mat_ = re.sub(r"\.(.*)", "", mat_)
             if mat_[:2] == "0x":
                 tflags[i] = int(mat_, base=16)
-                # print(f"{mat_} -> {tflags[i]} (0x{tflags[i]:0x})")
+                # FCEC_print(f"{mat_} -> {tflags[i]} (0x{tflags[i]:0x})")
             else:
                 tags = mat_.split("_")
                 tflags[i] = GetFlagFromTags(tags)
-                # print(f"{mat_} -> {tags} -> {tflags[i]} (0x{tflags[i]:0x})")
+                # FCEC_print(f"{mat_} -> {tags} -> {tflags[i]} (0x{tflags[i]:0x})")
         mesh.PSetTriagsFlags(mesh.MNumParts - 1, tflags)
 
     return mesh
@@ -515,19 +522,19 @@ def CopyDamagePartsVertsToPartsVerts(mesh):
             damgd_pids += [damgd_pid]
 
             pid = np.argwhere(part_names == part_names[damgd_pid][7:])
-            # print(damgd_pid, part_names[damgd_pid], pid, len(pid))
+            # FCEC_print(damgd_pid, part_names[damgd_pid], pid, len(pid))
             if len(pid) < 1:
                 continue
             pid = pid[0][0]
 
             if mesh.PNumTriags(damgd_pid) != mesh.PNumTriags(pid):
-                print(f"discarding '{part_names[damgd_pid]}', because number of triags differ to {part_names[pid]}")
+                FCEC_print(f"discarding '{part_names[damgd_pid]}', because number of triags differ to {part_names[pid]}")
                 continue
             if mesh.PNumVerts(damgd_pid) != mesh.PNumVerts(pid):
-                print(f"discarding '{part_names[damgd_pid]}', because number of verts differ to {part_names[pid]}")
+                FCEC_print(f"discarding '{part_names[damgd_pid]}', because number of verts differ to {part_names[pid]}")
                 continue
 
-            print(f"copy verts/norms of {part_names[damgd_pid]} to damaged verts/norms of {part_names[pid]}")
+            FCEC_print(f"copy verts/norms of {part_names[damgd_pid]} to damaged verts/norms of {part_names[pid]}")
             damgd_part_vidxs = GetPartGlobalOrderVidxs(mesh, damgd_pid)
             part_vidxs = GetPartGlobalOrderVidxs(mesh, pid)
 
@@ -546,7 +553,7 @@ def CopyDamagePartsVertsToPartsVerts(mesh):
             mesh.MVertsDamgdPos = dv.flatten()
     for i in sorted(damgd_pids, reverse=True):
         mesh.OpDeletePart(i)
-    print(damgd_pids)
+    FCEC_print(damgd_pids)
     return mesh
 
 def PartsToDummies(mesh):
@@ -559,14 +566,14 @@ def PartsToDummies(mesh):
     r = re.compile("DUMMY_[0-9][0-9]_", re.IGNORECASE)
     for i in range(mesh.MNumParts):
         if r.match(mesh.PGetName(i)[:9]) is not None:
-            print(f"convert part {i} '{mesh.PGetName(i)}' to dummy {mesh.PGetName(i)[9:]}")
+            FCEC_print(f"convert part {i} '{mesh.PGetName(i)}' to dummy {mesh.PGetName(i)[9:]}")
             pids += [i]
             dms += [mesh.PGetName(i)[9:]]
             mesh.OpCenterPart(i)
             dms_pos = np.append(dms_pos, mesh.PGetPos(i))
     for i in reversed(pids):
         mesh.OpDeletePart(i)
-    print(pids, dms, dms_pos)
+    FCEC_print(pids, dms, dms_pos)
     mesh.MSetDummyNames(dms)
     mesh.MSetDummyPos(dms_pos)
     return mesh
@@ -576,7 +583,7 @@ def SetAnimatedVerts(mesh):
     Set <partname> verts movable iff contained in ANIMATED_##_<partname> cuboid
     hull, where # is digit
     """
-    print("SetAnimatedVerts(mesh):")
+    FCEC_print("SetAnimatedVerts(mesh):")
     vpos = mesh.MVertsPos.reshape((-1, 3))
     animation_flags = mesh.MVertsAnimation
     anim_pids = []
@@ -585,13 +592,13 @@ def SetAnimatedVerts(mesh):
     for i, part_name in zip(range(mesh.MNumParts), part_names):
         part_anim_pids = []
         if r.match(part_name[:12]) is None:
-            print(i, part_name)
+            FCEC_print(i, part_name)
             for j, anim_name in zip(range(mesh.MNumParts), part_names):
                 if anim_name[12:] == part_name and r.match(anim_name[:12]) is not None:
                     anim_pids += [j]
                     part_anim_pids += [j]
-                    print("  ", j, anim_name)
-            print("animation flag maps:", part_anim_pids)
+                    FCEC_print("  ", j, anim_name)
+            FCEC_print("animation flag maps:", part_anim_pids)
             if len(part_anim_pids) > 0:
                 part_vidxs = GetPartGlobalOrderVidxs(mesh, i)
                 # cannot use np.unique(), as shape may have unreferenced verts
@@ -602,12 +609,12 @@ def SetAnimatedVerts(mesh):
                 part_animation_flags = animation_flags[part_vidxs]
                 part_vpos = vpos[part_vidxs]
                 part_animation_flags[:] = 0x4
-                print(part_vidxs.shape, part_animation_flags.shape)
+                FCEC_print(part_vidxs.shape, part_animation_flags.shape)
                 for j in part_anim_pids:
                     part_anim_vidxs = GetPartGlobalOrderVidxs(mesh, j)
                     part_anim_vidxs = np.arange(np.amin(part_anim_vidxs), np.amax(part_anim_vidxs) + 1)
                     anim_vpos = vpos[part_anim_vidxs]
-                    print(anim_vpos.shape, np.amin(anim_vpos, axis=0), np.amax(anim_vpos, axis=0))
+                    FCEC_print(anim_vpos.shape, np.amin(anim_vpos, axis=0), np.amax(anim_vpos, axis=0))
                     cuboid_min = np.amin(anim_vpos, axis=0)
                     cuboid_max = np.amax(anim_vpos, axis=0)
                     for n in range(part_vpos.shape[0]):
@@ -615,10 +622,10 @@ def SetAnimatedVerts(mesh):
                         if False not in np.array(part_vpos[n] > cuboid_min) \
                         and False not in np.array(part_vpos[n] < cuboid_max):
                             part_animation_flags[n] = 0x0
-                            print(n, part_vpos[n], part_animation_flags[n])
+                            FCEC_print(n, part_vpos[n], part_animation_flags[n])
                     animation_flags[part_vidxs] = part_animation_flags
-                print(np.unique(animation_flags[part_vidxs]))
-    print(anim_pids, np.unique(animation_flags))
+                FCEC_print(np.unique(animation_flags[part_vidxs]))
+    FCEC_print(anim_pids, np.unique(animation_flags))
     mesh.MVertsAnimation = animation_flags
     for i in sorted(anim_pids, reverse=True):
         mesh.OpDeletePart(i)
@@ -635,15 +642,15 @@ def CenterParts(mesh):
         if name[:9] == "POSITION_":
             pos_parts[name[9:]] = i
             pos_pids += [i]
-    print(pos_parts)
+    FCEC_print(pos_parts)
     for pid in range(mesh.MNumParts):
         if part_names[pid][:9] != "POSITION_":
             if part_names[pid] not in pos_parts:  # POSITION_<partname> not available
-                print(f"center {part_names[pid]} to local centroid")
+                FCEC_print(f"center {part_names[pid]} to local centroid")
                 mesh.OpCenterPart(pid)
             else:                                 # POSITION_<partname> is available
                 pos_pid = pos_parts[part_names[pid]]
-                print(f"center {part_names[pid]} to centroid of {part_names[pos_pid]}")
+                FCEC_print(f"center {part_names[pid]} to centroid of {part_names[pos_pid]}")
                 mesh.OpCenterPart(pos_pid)
                 mesh.OpSetPartCenter(pid, mesh.PGetPos(pos_pid))
     for i in sorted(pos_pids, reverse=True):
@@ -660,27 +667,27 @@ def FixPartDummyNames(mesh):
     for i in range(len(dm)):
         tmp_1 = dm[i]
         tmp_ = re.sub(r"\.(.*)", "", tmp_1)
-        print(f"{tmp_1}->{tmp_}")
+        FCEC_print(f"{tmp_1}->{tmp_}")
         dm[i] = tmp_
     mesh.MSetDummyNames(dm)
     for pid in range(mesh.MNumParts):
         tmp_1 = mesh.PGetName(pid)
         tmp_ = re.sub(r"\.(.*)", "", tmp_1)
-        print(f"{tmp_1}->{tmp_}")
+        FCEC_print(f"{tmp_1}->{tmp_}")
         mesh.PSetName(pid, tmp_)
     return mesh
 
 
 #
 def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
-    print(CONFIG)
+    FCEC_print(CONFIG)
 
     # Import OBJ
     reader = LoadObj(filepath_obj_input)
     attrib = reader.GetAttrib()
-    print(f"attrib.vertices = {len(attrib.vertices)}, {int(len(attrib.vertices) / 3)}")
-    print(f"attrib.normals = {len(attrib.normals)}")
-    print(f"attrib.texcoords = {len(attrib.texcoords)}")
+    FCEC_print(f"attrib.vertices = {len(attrib.vertices)}, {int(len(attrib.vertices) / 3)}")
+    FCEC_print(f"attrib.normals = {len(attrib.normals)}")
+    FCEC_print(f"attrib.texcoords = {len(attrib.texcoords)}")
     objverts = GetVerts(reader)
     objnorms = GetNormals(reader)
     objtexcoords = GetTexcoords(reader)
@@ -690,7 +697,7 @@ def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
     # Transform geometric data, load as fc.Mesh
     mesh = fc.Mesh()
     for i in range(len(shapenames)):
-        print("s_name", shapenames[i])
+        FCEC_print("s_name", shapenames[i])
         mesh = ShapeToPart(reader,
                            mesh, objverts, objnorms, objtexcoords, shapenames[i],
                            CONFIG["material2texpage"], CONFIG["material2triagflag"])
@@ -720,9 +727,9 @@ def workload_Obj2Fce(filepath_obj_input, filepath_fce_output, CONFIG):
 
 # -------------------------------------- script functions
 def PrintMeshParts_order(mesh, part_names_sorted):
-    print("pid  IS                          SHOULD")
+    FCEC_print("pid  IS                          SHOULD")
     for pid in range(mesh.MNumParts):
-        print(f"{pid:<2} {mesh.PGetName(pid):<12} {part_names_sorted[pid]:<12}")
+        FCEC_print(f"{pid:<2} {mesh.PGetName(pid):<12} {part_names_sorted[pid]:<12}")
 
 def AssertPartsOrder(mesh, part_names_sorted, onlywarn=False):
     for pid in range(mesh.MNumParts):
@@ -781,7 +788,7 @@ def workload_SortPartsToFce3Order(filepath_fce_input, fce_outversion):
         for target_idx in range(0, len(part_names_sorted)):
             pname = part_names_sorted[target_idx]
             current_idx = GetMeshPartnameIdx(mesh, pname)
-            # print(f" {pname} {current_idx} -> {target_idx}")
+            # FCEC_print(f" {pname} {current_idx} -> {target_idx}")
             while current_idx > target_idx:
                 current_idx = mesh.OpMovePart(current_idx)
         AssertPartsOrder(mesh, part_names_sorted, onlywarn=True)
@@ -789,8 +796,8 @@ def workload_SortPartsToFce3Order(filepath_fce_input, fce_outversion):
 
 
     WriteFce(fce_outversion, mesh, filepath_fce_output)
-    PrintFceInfo(filepath_fce_output)
-    # print(f"OUTPUT = {filepath_fce_output}", flush=True)
+    # PrintFceInfo(filepath_fce_output)
+    # FCEC_print(f"OUTPUT = {filepath_fce_output}", flush=True)
 
 # -------------------------------------- bfut_SortPartsToFce3Order
 #########################################################
@@ -819,7 +826,7 @@ def DummiesToFce3(dms_pos, dms_names):
             pass
         # """
         # elif x[0] in [":", "B", "I", "M", "P", "R"]:
-        #     print(x, "->", dms_names[i])
+        #     FCEC_print(x, "->", dms_names[i])
         #     continue
         # # """
         elif x[:4] in ["HFLO", "HFRE", "HFLN", "HFRN", "TRLO", "TRRE", "TRLN",
@@ -854,7 +861,7 @@ def DummiesToFce3(dms_pos, dms_names):
                 dms_names[i] = "SMLN"  # blue
             else:
                 dms_names[i] = "SMRN"  # red
-        print(x, "->", dms_names[i])
+        FCEC_print(x, "->", dms_names[i])
     return dms_pos, dms_names
 
 def workload_ConvertDummies_to_Fce3_(filepath_fce_input, fce_outversion):
@@ -901,7 +908,7 @@ def DummiesFce3ToFce4(dms_pos, dms_names):
             else:  # == "R"  # right
                 tmp.append("BNE530")
             dms_names[i] = "".join(tmp)
-        print(x, "->", dms_names[i])
+        FCEC_print(x, "->", dms_names[i])
     return dms_pos, dms_names
 
 def workload_ConvertDummies_Fce3_to_Fce4_(filepath_fce_input, fce_outversion):
@@ -943,7 +950,7 @@ def Partnames3to4_car(mesh):
     ]
     for pid in range(min(len(pnames_map), mesh.MNumParts)):
         mesh.PSetName(pid, pnames_map[pid])
-        print(f"renaming part {pid} -> '{pnames_map[pid]}'")
+        FCEC_print(f"renaming part {pid} -> '{pnames_map[pid]}'")
     return mesh
 
 def Partnames4to4M_car(mesh):
@@ -984,7 +991,7 @@ def Partnames4to4M_car(mesh):
         new_pname = pnames_map.get(pname, None)
         if not new_pname is None:
             mesh.PSetName(pid, new_pname)
-            print(f"renaming part {pid} '{pname}' -> '{new_pname}'")
+            FCEC_print(f"renaming part {pid} '{pname}' -> '{new_pname}'")
     return mesh
 
 def AddPartAtPositionForLicenseDummy(mesh):
@@ -1003,7 +1010,7 @@ def AddPartAtPositionForLicenseDummy(mesh):
             didx = dms_names.index(lic)
             dms_pos = mesh.MGetDummyPos()[3*didx:3*didx + 3]
             new_pid = mesh.OpAddHelperPart(":PPlicense", dms_pos)
-            print(f"adding dummy part {new_pid} ':PPlicense'")
+            FCEC_print(f"adding dummy part {new_pid} ':PPlicense'")
             break
     return mesh
 
@@ -1166,7 +1173,7 @@ class FCEC_OT_UpdateUIList(Operator):
         if not ret:
             return
         valid_files = np.concatenate((fce_files, tga_files))
-        print(f"valid_files: {valid_files}")
+        FCEC_print(f"valid_files: {valid_files}")
         for v in valid_files:
             self.add_value(context, v)
 
@@ -1208,7 +1215,7 @@ class FCEC_OT_UpdateUIListExport(Operator):
             return
         elif ret:
             valid_files = np.concatenate((fce_files, tga_files))
-            print(f"valid_files: {valid_files}")
+            FCEC_print(f"valid_files: {valid_files}")
             for v in valid_files:
                 self.add_value(context, v)
         if valid:
@@ -1484,7 +1491,7 @@ class FcecodecImport(Operator, ImportHelper):
                 # decode active files from selected VIV archive
                 for idx in np.concatenate([active_fce_idx, active_tga_idx]):
                     tmp_ = pathlib.Path(tdir / files[idx])
-                    # print(f"unviv(): {idx} to {tmp_}")
+                    # FCEC_print(f"unviv(): {idx} to {tmp_}")
                     ret = uvt.unviv(vivpath, tdir, fileidx=idx+1, verbose=False)
                     if ret and tmp_.is_file():
                         # FCE to /temp
@@ -1907,7 +1914,7 @@ class FcecodecExport(Operator, ExportHelper):
                 #     hsbt3,  # DriColor per MSetColors()
                 # ],
             ], dtype=np.uint8)
-            print(f"tcolor: {tcolor} ({tcolor.shape})")
+            FCEC_print(f"tcolor: {tcolor} ({tcolor.shape})")
 
             mesh = fc.Mesh()
             mesh = LoadFce(mesh, path)
@@ -1918,16 +1925,16 @@ class FcecodecExport(Operator, ExportHelper):
         # For officer models and pursuit road objects, the NumArts value must equal the greatest used texture page minus 1.
         # In all other cases, NumArts = 1.
         if self.fce_modify_num_arts:
-            print(f"Setting NumArts from existing texture page")
+            FCEC_print(f"Setting NumArts from existing texture page")
             val = 1
             mesh = fc.Mesh()
             mesh = LoadFce(mesh, path)
             for pidx in range(mesh.MNumParts):
                 texps = mesh.PGetTriagsTexpages(pidx)
                 val = max(val, np.amax(texps) - 1)
-                print(f"part {pidx} texpage range: {np.amin(texps)}-{np.amax(texps)}")
+                FCEC_print(f"part {pidx} texpage range: {np.amin(texps)}-{np.amax(texps)}")
             mesh.MNumArts = val
-            print(f"mesh.MNumArts: {mesh.MNumArts}")
+            FCEC_print(f"mesh.MNumArts: {mesh.MNumArts}")
             WriteFce(self.fce_version, mesh, path)
 
 
@@ -1946,16 +1953,16 @@ class FcecodecExport(Operator, ExportHelper):
                     return None, None, tempfiles
 
                 files = np.array(vd.get("files", []))
-                print(f"files: {files}")
+                FCEC_print(f"files: {files}")
                 active_fce = sce.fce_files[sce.active_fce_files_index].name
-                print(f"active_fce: {active_fce}")
+                FCEC_print(f"active_fce: {active_fce}")
                 active_fce_idx = np.where(files == active_fce)
                 if len(active_fce_idx) < 1 or len(active_fce_idx[0]) < 1:
                     print("Warning: Selected FCE file not found in selected VIV archive")
                     return None, None, tempfiles
                 active_fce_idx = int(active_fce_idx[0][0])
 
-                print(f"active_fce_idx: {active_fce_idx}")
+                FCEC_print(f"active_fce_idx: {active_fce_idx}")
 
                 # update active FCE in selected VIV archive
                 ptn = time.perf_counter_ns()
